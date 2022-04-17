@@ -1,0 +1,10 @@
+[package]
+name = "dim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rug = "1.15.0"
+
+[dev-dependencies]
+k9 = {path = "/Users/ian/src/k9/k9"}
