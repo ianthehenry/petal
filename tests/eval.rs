@@ -14,30 +14,32 @@ fn scalar(value: i64) -> Array<i64> {
     }
 }
 
+fn test_ranked_add(
+    left: Array<i64>,
+    right: Array<i64>,
+    left_rank: isize,
+    right_rank: isize,
+) -> String {
+    ranked_add(left.view(), right.view(), left_rank, right_rank)
+        .view()
+        .render()
+}
+
 #[test]
 fn add_scalar_rank_zero() {
-    k9::snapshot!(
-        ranked_add(scalar(10).view(), scalar(5).view(), 0, 0).view().render(),
-        "[]$[15]"
-    );
+    k9::snapshot!(test_ranked_add(scalar(10), scalar(5), 0, 0), "[]$[15]");
 
     k9::snapshot!(
-        ranked_add(scalar(10).view(), idot(vec![3]).view(), 0, 0)
-            .view()
-            .render(),
+        test_ranked_add(scalar(10), idot(vec![3]), 0, 0),
         "[3]$[10, 11, 12]"
     );
     k9::snapshot!(
-        ranked_add(idot(vec![3]).view(), scalar(10).view(), 0, 0)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![3]), scalar(10), 0, 0),
         "[3]$[10, 11, 12]"
     );
 
     k9::snapshot!(
-        ranked_add(scalar(10).view(), idot(vec![2, 3]).view(), 0, 0)
-            .view()
-            .render(),
+        test_ranked_add(scalar(10), idot(vec![2, 3]), 0, 0),
         "[2, 3]$[10, 11, 12, 13, 14, 15]"
     );
 }
@@ -45,15 +47,13 @@ fn add_scalar_rank_zero() {
 #[test]
 #[should_panic]
 fn add_scalar_rank_one() {
-    ranked_add(scalar(10).view(), scalar(5).view(), 1, 0);
+    test_ranked_add(scalar(10), scalar(5), 1, 0);
 }
 
 #[test]
 fn add_vector_rank_one() {
     k9::snapshot!(
-        ranked_add(idot(vec![3]).view(), idot(vec![3]).view(), 1, 1)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![3]), idot(vec![3]), 1, 1),
         "[3]$[0, 2, 4]"
     );
 }
@@ -61,15 +61,13 @@ fn add_vector_rank_one() {
 #[test]
 #[should_panic]
 fn add_vector_rank_one_length_mismatch() {
-    ranked_add(idot(vec![2]).view(), idot(vec![3]).view(), 1, 1);
+    test_ranked_add(idot(vec![2]), idot(vec![3]), 1, 1);
 }
 
 #[test]
 fn add_scalar_rank_zero_vector_rank_one() {
     k9::snapshot!(
-        ranked_add(scalar(10).view(), idot(vec![3]).view(), 0, 1)
-            .view()
-            .render(),
+        test_ranked_add(scalar(10), idot(vec![3]), 0, 1),
         "[3]$[10, 11, 12]"
     );
 }
@@ -77,16 +75,12 @@ fn add_scalar_rank_zero_vector_rank_one() {
 #[test]
 fn add_vectors_rank_zero_one() {
     k9::snapshot!(
-        ranked_add(idot(vec![2]).view(), idot(vec![3]).view(), 0, 1)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2]), idot(vec![3]), 0, 1),
         "[2, 3]$[0, 1, 2, 1, 2, 3]"
     );
 
     k9::snapshot!(
-        ranked_add(idot(vec![2]).view(), idot(vec![3]).view(), 1, 0)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2]), idot(vec![3]), 1, 0),
         "[3, 2]$[0, 1, 1, 2, 2, 3]"
     );
 }
@@ -94,9 +88,7 @@ fn add_vectors_rank_zero_one() {
 #[test]
 fn add_matrix_rank_zero() {
     k9::snapshot!(
-        ranked_add(idot(vec![2, 3]).view(), idot(vec![2, 3]).view(), 0, 0)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2, 3]), idot(vec![2, 3]), 0, 0),
         "[2, 3]$[0, 2, 4, 6, 8, 10]"
     );
 }
@@ -104,9 +96,7 @@ fn add_matrix_rank_zero() {
 #[test]
 fn add_matrix_rank_one() {
     k9::snapshot!(
-        ranked_add(idot(vec![2, 3]).view(), idot(vec![2, 3]).view(), 1, 1)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2, 3]), idot(vec![2, 3]), 1, 1),
         "[2, 3]$[0, 2, 4, 6, 8, 10]"
     );
 }
@@ -114,9 +104,7 @@ fn add_matrix_rank_one() {
 #[test]
 fn add_vector_matrix_rank_zero() {
     k9::snapshot!(
-        ranked_add(idot(vec![2]).view(), idot(vec![2, 3]).view(), 0, 0)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2]), idot(vec![2, 3]), 0, 0),
         "[2, 3]$[0, 1, 2, 4, 5, 6]"
     );
 }
@@ -124,9 +112,7 @@ fn add_vector_matrix_rank_zero() {
 #[test]
 fn add_vector_matrix_rank_one() {
     k9::snapshot!(
-        ranked_add(idot(vec![3]).view(), idot(vec![2, 3]).view(), 1, 1)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![3]), idot(vec![2, 3]), 1, 1),
         "[2, 3]$[0, 2, 4, 3, 5, 7]"
     );
 }
@@ -134,16 +120,12 @@ fn add_vector_matrix_rank_one() {
 #[test]
 fn add_vector_matrix_rank_zero_one() {
     k9::snapshot!(
-        ranked_add(idot(vec![2]).view(), idot(vec![2, 3]).view(), 0, 1)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2]), idot(vec![2, 3]), 0, 1),
         "[2, 3]$[0, 1, 2, 4, 5, 6]"
     );
 
     k9::snapshot!(
-        ranked_add(idot(vec![2]).view(), idot(vec![2, 3]).view(), 1, 0)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2]), idot(vec![2, 3]), 1, 0),
         "[2, 3, 2]$[0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6]"
     );
 }
@@ -151,9 +133,7 @@ fn add_vector_matrix_rank_zero_one() {
 #[test]
 fn add_vector_matrix_rank_one_two() {
     k9::snapshot!(
-        ranked_add(idot(vec![2]).view(), idot(vec![2, 3]).view(), 1, 2)
-            .view()
-            .render(),
+        test_ranked_add(idot(vec![2]), idot(vec![2, 3]), 1, 2),
         "[2, 3]$[0, 1, 2, 4, 5, 6]"
     );
 }
