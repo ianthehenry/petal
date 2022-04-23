@@ -59,7 +59,7 @@ fn unary_negation<'a>(i: &'a str) -> IResult<&'a str, Token> {
 }
 
 fn operator<'a>(i: &'a str) -> IResult<&'a str, Token> {
-    map(one_of("+-*"), |op| Token::Identifier(op.to_string()))(i)
+    map(one_of("+-*."), |op| Token::Identifier(op.to_string()))(i)
 }
 
 fn semicolons<'a>(i: &'a str) -> IResult<&'a str, Token> {
