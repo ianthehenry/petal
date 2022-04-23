@@ -9,6 +9,13 @@ pub enum Word {
     Identifier(String),
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum Term {
+    Word(Word),
+    AdverbApplication(Word, Box<Term>),
+    ConjunctionApplication(Word, Box<Term>, Box<Term>),
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Delimiter {
     Parens,
@@ -104,25 +111,26 @@ impl PartOfSpeech {
         }
     }
 
-    fn double_stack_parser(stack: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Word, TermPartOfSpeech)> {
+    fn double_stack_parser(stack: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, TermPartOfSpeech)> {
         let mut term_stack = vec![];
 
         while !stack.is_empty() {
             let next = stack.pop().unwrap();
             match &next {
                 (word, PartOfSpeech::Noun) => {
-                    term_stack.push((word.clone(), TermPartOfSpeech::Noun))
+                    term_stack.push((Term::Word(word.clone()), TermPartOfSpeech::Noun))
                 }
-                (word, PartOfSpeech::Verb(arity)) => {
-                    term_stack.push((word.clone(), TermPartOfSpeech::Verb(arity.clone())))
-                }
+                (word, PartOfSpeech::Verb(arity)) => term_stack.push((
+                    Term::Word(word.clone()),
+                    TermPartOfSpeech::Verb(arity.clone()),
+                )),
                 (adverb, PartOfSpeech::Adverb(Arity::Unary, out_arity)) => {
                     let (arg, _arg_pos) = term_stack
                         .pop()
                         .expect("adverb has nothing to apply itself to");
 
                     term_stack.push((
-                        Word::Parens(vec![adverb.clone(), arg]),
+                        Term::AdverbApplication(adverb.clone(), Box::new(arg)),
                         TermPartOfSpeech::Verb(out_arity.clone()),
                     ))
                 }
@@ -134,7 +142,11 @@ impl PartOfSpeech {
                     lefthand_terms.reverse();
                     let (lhs, _lhs_pos) = lefthand_terms.pop().expect("conjunction has no lhs");
                     term_stack.push((
-                        Word::Parens(vec![conjunction.clone(), lhs, rhs]),
+                        Term::ConjunctionApplication(
+                            conjunction.clone(),
+                            Box::new(lhs),
+                            Box::new(rhs),
+                        ),
                         TermPartOfSpeech::Verb(out_arity.clone()),
                     ));
 
@@ -259,46 +271,48 @@ mod tests {
             r#"
 [
     (
-        Identifier(
-            "x",
+        Word(
+            Identifier(
+                "x",
+            ),
         ),
         Noun,
     ),
     (
-        Parens(
-            [
+        ConjunctionApplication(
+            Identifier(
+                ".",
+            ),
+            AdverbApplication(
                 Identifier(
-                    ".",
+                    "fold",
                 ),
-                Parens(
-                    [
-                        Identifier(
-                            "fold",
-                        ),
-                        Identifier(
-                            "+",
-                        ),
-                    ],
+                Word(
+                    Identifier(
+                        "+",
+                    ),
                 ),
-                Parens(
-                    [
-                        Identifier(
-                            "fold",
-                        ),
-                        Identifier(
-                            "*",
-                        ),
-                    ],
+            ),
+            AdverbApplication(
+                Identifier(
+                    "fold",
                 ),
-            ],
+                Word(
+                    Identifier(
+                        "*",
+                    ),
+                ),
+            ),
         ),
         Verb(
             Binary,
         ),
     ),
     (
-        Identifier(
-            "y",
+        Word(
+            Identifier(
+                "y",
+            ),
         ),
         Noun,
     ),
