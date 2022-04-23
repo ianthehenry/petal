@@ -188,10 +188,10 @@ mod tests {
     use super::*;
 
     impl Word {
-        fn delimited(start: &str, words: Vec<Word>, end: &str) -> String {
+        fn delimited(start: &str, words: &Vec<Word>, end: &str) -> String {
             let mut result = start.to_string();
             result += &words
-                .into_iter()
+                .iter()
                 .map(|word| word.to_short_string())
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -199,7 +199,7 @@ mod tests {
             result
         }
 
-        fn to_short_string(self) -> String {
+        fn to_short_string(&self) -> String {
             match self {
                 Word::Int64(num) => num.to_string(),
                 Word::Identifier(id) => id.to_string(),
@@ -214,7 +214,7 @@ mod tests {
         if !remaining.is_empty() {
             panic!("not a total parse!");
         }
-        Word::delimited("", resolve_semicolons(parsed, Delimiter::Parens), "")
+        Word::delimited("", &resolve_semicolons(parsed, Delimiter::Parens), "")
     }
 
     #[test]
@@ -248,6 +248,41 @@ mod tests {
         );
     }
 
+    fn show_term(term: &Term) -> String {
+        match term {
+            Term::Word(word) => word.to_short_string(),
+            Term::AdverbApplication(adverb, term) => {
+                format!("({} {})", adverb.to_short_string(), show_term(term))
+            }
+            Term::ConjunctionApplication(conjunction, lhs, rhs) => {
+                format!(
+                    "({} {} {})",
+                    show_term(lhs),
+                    conjunction.to_short_string(),
+                    show_term(rhs)
+                )
+            }
+        }
+    }
+    fn show_term_pos(pos: &TermPartOfSpeech) -> String {
+        match pos {
+            TermPartOfSpeech::Noun => "n".to_string(),
+            TermPartOfSpeech::Verb(Arity::Unary) => "v1".to_string(),
+            TermPartOfSpeech::Verb(Arity::Binary) => "v2".to_string(),
+        }
+    }
+    fn show_annotated_term(annotated_term: &(Term, TermPartOfSpeech)) -> String {
+        let (term, pos) = annotated_term;
+        format!("{}:{}", show_term(term), show_term_pos(pos))
+    }
+    fn show_annotated_terms(terms: Vec<(Term, TermPartOfSpeech)>) -> String {
+        terms
+            .iter()
+            .map(show_annotated_term)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     #[test]
     fn double_stack_parser() {
         let input = "x fold + . fold * y";
@@ -267,57 +302,8 @@ mod tests {
         let mut terms = PartOfSpeech::double_stack_parser(&mut annotated_words);
         terms.reverse();
         k9::snapshot!(
-            terms,
-            r#"
-[
-    (
-        Word(
-            Identifier(
-                "x",
-            ),
-        ),
-        Noun,
-    ),
-    (
-        ConjunctionApplication(
-            Identifier(
-                ".",
-            ),
-            AdverbApplication(
-                Identifier(
-                    "fold",
-                ),
-                Word(
-                    Identifier(
-                        "+",
-                    ),
-                ),
-            ),
-            AdverbApplication(
-                Identifier(
-                    "fold",
-                ),
-                Word(
-                    Identifier(
-                        "*",
-                    ),
-                ),
-            ),
-        ),
-        Verb(
-            Binary,
-        ),
-    ),
-    (
-        Word(
-            Identifier(
-                "y",
-            ),
-        ),
-        Noun,
-    ),
-]
-"#
+            show_annotated_terms(terms),
+            "x:n ((fold +) . (fold *)):v2 y:n"
         );
     }
 }
