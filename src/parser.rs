@@ -264,6 +264,7 @@ mod tests {
             }
         }
     }
+
     fn show_term_pos(pos: &TermPartOfSpeech) -> String {
         match pos {
             TermPartOfSpeech::Noun => "n".to_string(),
@@ -271,10 +272,12 @@ mod tests {
             TermPartOfSpeech::Verb(Arity::Binary) => "v2".to_string(),
         }
     }
+
     fn show_annotated_term(annotated_term: &(Term, TermPartOfSpeech)) -> String {
         let (term, pos) = annotated_term;
         format!("{}:{}", show_term(term), show_term_pos(pos))
     }
+
     fn show_annotated_terms(terms: Vec<(Term, TermPartOfSpeech)>) -> String {
         terms
             .iter()
@@ -283,9 +286,7 @@ mod tests {
             .join(" ")
     }
 
-    #[test]
-    fn double_stack_parser() {
-        let input = "x fold + . fold * y";
+    fn test_parser(input: &str) -> String {
         let (remaining, parsed) = tokenizer::tokens(input).unwrap();
         if !remaining.is_empty() {
             panic!("not a total parse!");
@@ -301,8 +302,17 @@ mod tests {
 
         let mut terms = PartOfSpeech::double_stack_parser(&mut annotated_words);
         terms.reverse();
+        show_annotated_terms(terms)
+    }
+
+    #[test]
+    fn double_stack_parser() {
+        k9::snapshot!(test_parser("x + y"), "x:n +:v2 y:n");
+        k9::snapshot!(test_parser("x +.* y"), "x:n (+ . *):v2 y:n");
+        k9::snapshot!(test_parser("x fold + . * y"), "x:n ((fold +) . *):v2 y:n");
+        k9::snapshot!(test_parser("x + . fold * y"), "x:n (+ . (fold *)):v2 y:n");
         k9::snapshot!(
-            show_annotated_terms(terms),
+            test_parser("x fold + . fold * y"),
             "x:n ((fold +) . (fold *)):v2 y:n"
         );
     }
