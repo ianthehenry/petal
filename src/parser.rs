@@ -16,6 +16,16 @@ enum Term {
     ConjunctionApplication(Word, Box<Term>, Box<Term>),
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum AnyTerm {
+    Placeholder,
+    Word(Word),
+    FunctionApplication(Box<AnyTerm>, Box<AnyTerm>),
+    OperatorApplication(Box<AnyTerm>, Box<AnyTerm>, Box<AnyTerm>),
+    AdverbApplication(Box<AnyTerm>, Box<AnyTerm>),
+    ConjunctionApplication(Box<AnyTerm>, Box<AnyTerm>, Box<AnyTerm>),
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Delimiter {
     Parens,
@@ -100,7 +110,7 @@ impl PartOfSpeech {
         match word {
             Word::Int64(_) => Noun,
             Word::Identifier(id) => match id.as_str() {
-                "+" => Verb(Arity::Binary),
+                "+" | "*" => Verb(Arity::Binary),
                 "neg" => Verb(Arity::Unary),
                 "." => Adverb(Arity::Binary, Arity::Binary),
                 "fold" => Adverb(Arity::Unary, Arity::Unary),
@@ -181,6 +191,160 @@ impl PartOfSpeech {
             .collect::<Vec<_>>();
         Self::of_annotated_words(&annotated_words)
     }
+}
+
+fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(AnyTerm, PartOfSpeech)> {
+    use AnyTerm::*;
+    use Arity::*;
+    use PartOfSpeech::*;
+    let mut end_reached = false;
+    let mut stack: Vec<Option<(AnyTerm, PartOfSpeech)>> = vec![None, None, None, None];
+    loop {
+        // These patterns are sort of written backwards from how I want to think
+        // of them. We're walking right-to-left through the input tokens:
+        //
+        //    1 twice + 2
+        //
+        // So the stack will contain a reverse prefix from the right:
+        //
+        // 2
+        // 2 +
+        // 2 + twice
+        // 2 (+ twice)
+        // 2 (+ twice) 1
+        match &stack[stack.len() - 4..] {
+            [.., Some((_rhs, Adverb(Unary, _))), Some((_lhs, Adverb(Unary, _)))] => {
+                panic!("adverb precomp")
+            }
+            [.., Some((verb, Verb(_))), Some((adverb, Adverb(Unary, result_arity)))] => {
+                let result_arity = result_arity.clone();
+                // TODO: we can pretty easily avoid cloning the terms. slash,
+                // like, this entire situation can be greatly simplified by a
+                // typed stack helper thing
+                let adverb = adverb.clone();
+                let verb = verb.clone();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    AdverbApplication(Box::new(adverb), Box::new(verb)),
+                    Verb(result_arity),
+                )));
+            }
+            [.., Some((noun, Noun)), Some((verb, Verb(Unary))), None | Some((_, Verb(_) | Noun))] =>
+            {
+                let noun = noun.clone();
+                let verb = verb.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    FunctionApplication(Box::new(verb), Box::new(noun)),
+                    Noun,
+                )));
+                stack.push(stash);
+            }
+            [.., Some((rhs, Noun | Verb(_))), Some((verb, Adverb(Binary, result_arity))), Some((lhs, Noun | Verb(_))), _] =>
+            {
+                let lhs = lhs.clone();
+                let verb = verb.clone();
+                let result_arity = result_arity.clone();
+                let rhs = rhs.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    ConjunctionApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
+                    Verb(result_arity),
+                )));
+                stack.push(stash);
+            }
+            [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), Some((lhs, Noun)), None | Some((_, Verb(_) | Noun))] =>
+            {
+                let lhs = lhs.clone();
+                let verb = verb.clone();
+                let rhs = rhs.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    OperatorApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
+                    Noun,
+                )));
+                stack.push(stash);
+            }
+
+            _ => match input.pop() {
+                None => {
+                    if end_reached {
+                        break;
+                    } else {
+                        end_reached = true;
+                        stack.push(None);
+                    }
+                }
+                Some((word, pos)) => stack.push(Some((Word(word), pos))),
+            },
+        };
+        println!("{:?}", &stack);
+    }
+    stack.into_iter().flatten().collect::<Vec<_>>()
+}
+
+fn tester(input: &str) -> String {
+    let (remaining, parsed) = tokenizer::tokens(input).unwrap();
+    if !remaining.is_empty() {
+        panic!("not a total parse!");
+    }
+    let words = resolve_semicolons(parsed, Delimiter::Parens);
+    let mut annotated_words = words
+        .into_iter()
+        .map(|x| {
+            let part_of_speech = PartOfSpeech::of_word(&x);
+            (x, part_of_speech)
+        })
+        .collect::<Vec<_>>();
+
+    let mut terms = table_parser(&mut annotated_words);
+    format!("{:?}", terms)
+}
+
+#[test]
+fn test_table_parser() {
+    k9::snapshot!(
+        tester("fold +"),
+        r#"[(AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), Verb(Unary))]"#
+    );
+    k9::snapshot!(
+        tester("fold + x"),
+        r#"[(FunctionApplication(AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), Word(Identifier("x"))), Noun)]"#
+    );
+    k9::snapshot!(
+        tester("x + y"),
+        r#"[(OperatorApplication(Word(Identifier("+")), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+    );
+    k9::snapshot!(
+        tester("x +.* y"),
+        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), Word(Identifier("+")), Word(Identifier("*"))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+    );
+    k9::snapshot!(
+        tester("x fold + . * y"),
+        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), Word(Identifier("*"))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+    );
+    k9::snapshot!(
+        tester("x + . fold * y"),
+        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), Word(Identifier("+")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*")))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+    );
+    k9::snapshot!(
+        tester("x fold + . fold * y"),
+        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*")))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+    );
+
+    k9::snapshot!(
+        tester("x fold * . fold + . fold * y"),
+        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*"))), ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*"))))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+    );
 }
 
 #[cfg(test)]
