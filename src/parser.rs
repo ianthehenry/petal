@@ -34,8 +34,10 @@ impl Word {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Term {
-    Placeholder,
-    Word(Word),
+    Atom(Word),
+    Parens(Box<Term>),
+    Brackets(Box<Term>),
+    Tuple(Box<Term>, Box<Term>),
     FunctionApplication(Box<Term>, Box<Term>),
     OperatorApplication(Box<Term>, Box<Term>, Box<Term>),
     AdverbApplication(Box<Term>, Box<Term>),
@@ -46,19 +48,23 @@ impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Term::*;
         match self {
-            Placeholder => write!(f, "_"),
-            Word(word) => write!(f, "{}", word.to_short_string()),
+            Atom(word) => write!(f, "{}", word.to_short_string()),
+            Parens(term) => write!(f, "({})", term),
+            Brackets(term) => write!(f, "[{}]", term),
+            Tuple(fst, snd) => {
+                write!(f, "(tuple {} {})", fst, snd)
+            }
             AdverbApplication(adverb, term) => {
-                write!(f, "(A {} {})", adverb, term)
+                write!(f, "(! {} {})", adverb, term)
             }
             ConjunctionApplication(conjunction, lhs, rhs) => {
-                write!(f, "(C {} {} {})", conjunction, lhs, rhs)
+                write!(f, "(! {} {} {})", conjunction, lhs, rhs)
             }
             FunctionApplication(function, term) => {
-                write!(f, "(F {} {})", function, term)
+                write!(f, "({} {})", function, term)
             }
             OperatorApplication(operator, lhs, rhs) => {
-                write!(f, "(O {} {} {})", operator, lhs, rhs)
+                write!(f, "({} {} {})", operator, lhs, rhs)
             }
         }
     }
@@ -155,48 +161,47 @@ impl fmt::Display for PartOfSpeech {
     }
 }
 
-impl PartOfSpeech {
-    fn of_word(word: &Word) -> Self {
-        use PartOfSpeech::*;
+fn parse_word(word: Word) -> (Term, PartOfSpeech) {
+    use PartOfSpeech::*;
 
-        match word {
-            Word::Int64(_) => Noun,
-            Word::Identifier(id) => match id.as_str() {
+    match word {
+        Word::Int64(_) => (Term::Atom(word), Noun),
+        Word::Identifier(id) => {
+            let pos = match id.as_str() {
                 "+" | "*" => Verb(Arity::Binary),
                 "neg" => Verb(Arity::Unary),
                 "." => Adverb(Arity::Binary, Arity::Binary),
                 "fold" => Adverb(Arity::Unary, Arity::Unary),
                 _ => Noun,
-            },
-            Word::Parens(words) => Self::of_words(words),
-            Word::Brackets(_) => Noun,
+            };
+            // TODO: how can i borrow id here?
+            (Term::Atom(Word::Identifier(id)), pos)
         }
-    }
-
-    // TODO: obviously this doesn't work at all
-    fn of_annotated_words(annotated_words: &[(&Word, PartOfSpeech)]) -> Self {
-        use PartOfSpeech::*;
-
-        match annotated_words {
-            [] => panic!("empty words!"),
-            [(_, pos)] => *pos,
-            [(_, Noun), ..] => Noun,
-            [(_, Verb(arity)), ..] => Verb(*arity),
-            [(_, Adverb(_, arity)), ..] => Verb(*arity),
-            _ => Noun,
+        Word::Parens(mut words) => {
+            let terms = table_parser(&mut words);
+            if terms.len() == 1 {
+                let (term, pos) = terms.into_iter().next().unwrap();
+                (Term::Parens(Box::new(term)), pos)
+            } else {
+                panic!("failed to parse parenthesized expression")
+            }
         }
-    }
-
-    fn of_words(words: &Vec<Word>) -> Self {
-        let annotated_words = words
-            .iter()
-            .map(|x| (x, Self::of_word(x)))
-            .collect::<Vec<_>>();
-        Self::of_annotated_words(&annotated_words)
+        Word::Brackets(mut words) => {
+            let terms = table_parser(&mut words);
+            if terms.len() == 1 {
+                let (term, pos) = terms.into_iter().next().unwrap();
+                if pos != Noun {
+                    panic!("bracketed array literals can only contain nouns")
+                }
+                (Term::Brackets(Box::new(term)), pos)
+            } else {
+                panic!("failed to parse bracketed array literal")
+            }
+        }
     }
 }
 
-fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, PartOfSpeech)> {
+fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
     use Arity::*;
     use PartOfSpeech::*;
     use Term::*;
@@ -262,7 +267,7 @@ fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, PartOfSpeec
                 )));
                 stack.push(stash);
             }
-            [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), Some((lhs, Noun)), None | Some((_, Verb(_) | Noun))] =>
+            [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), Some((lhs, Noun)), None | Some((_, Verb(_)))] =>
             {
                 let lhs = lhs.clone();
                 let verb = verb.clone();
@@ -278,6 +283,16 @@ fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, PartOfSpeec
                 stack.push(stash);
             }
 
+            [.., Some((snd, Noun)), Some((fst, Noun)), None | Some((_, Verb(_) | Noun))] => {
+                let first = fst.clone();
+                let second = snd.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((Tuple(Box::new(first), Box::new(second)), Noun)));
+                stack.push(stash);
+            }
+
             _ => match input.pop() {
                 None => {
                     if end_reached {
@@ -287,49 +302,13 @@ fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, PartOfSpeec
                         stack.push(None);
                     }
                 }
-                Some((word, pos)) => stack.push(Some((Word(word), pos))),
+                Some(word) => {
+                    stack.push(Some(parse_word(word)));
+                }
             },
         };
-        println!("{:?}", &stack);
     }
     stack.into_iter().flatten().collect::<Vec<_>>()
-}
-
-fn tester(input: &str) -> String {
-    let (remaining, parsed) = tokenizer::tokens(input).unwrap();
-    if !remaining.is_empty() {
-        panic!("not a total parse!");
-    }
-    let words = resolve_semicolons(parsed, Delimiter::Parens);
-    let mut annotated_words = words
-        .into_iter()
-        .map(|x| {
-            let part_of_speech = PartOfSpeech::of_word(&x);
-            (x, part_of_speech)
-        })
-        .collect::<Vec<_>>();
-
-    let mut terms = table_parser(&mut annotated_words);
-    show_annotated_terms(terms)
-}
-
-#[test]
-fn test_table_parser() {
-    k9::snapshot!(tester("neg 1 + 2"), "n:(F neg (O + 1 2))");
-    k9::snapshot!(tester("fold +"), "f:(A fold +)");
-    k9::snapshot!(tester("fold + x"), "n:(F (A fold +) x)");
-    k9::snapshot!(tester("x + y"), "n:(O + x y)");
-    k9::snapshot!(tester("x +.* y"), "n:(O (C . + *) x y)");
-    k9::snapshot!(tester("x fold + . * y"), "n:(O (C . (A fold +) *) x y)");
-    k9::snapshot!(tester("x + . fold * y"), "n:(O (C . + (A fold *)) x y)");
-    k9::snapshot!(
-        tester("x fold + . fold * y"),
-        "n:(O (C . (A fold +) (A fold *)) x y)"
-    );
-    k9::snapshot!(
-        tester("x fold * . fold + . fold * y"),
-        "n:(O (C . (A fold *) (C . (A fold +) (A fold *))) x y)"
-    );
 }
 
 #[cfg(test)]
@@ -373,5 +352,44 @@ mod tests {
             test("(1 2 (3 4; 5 6);; [7; 8])"),
             "(((1 2 ((3 4) (5 6)))) (([[7] [8]])))"
         );
+    }
+
+    fn tester(input: &str) -> String {
+        let (remaining, parsed) = tokenizer::tokens(input).unwrap();
+        if !remaining.is_empty() {
+            panic!("not a total parse!");
+        }
+        let mut words = resolve_semicolons(parsed, Delimiter::Parens);
+        let terms = table_parser(&mut words);
+        show_annotated_terms(terms)
+    }
+
+    #[test]
+    fn test_table_parser() {
+        k9::snapshot!(tester("neg 1 + 2"), "n:(neg (+ 1 2))");
+        k9::snapshot!(tester("fold +"), "f:(! fold +)");
+        k9::snapshot!(tester("fold + x"), "n:((! fold +) x)");
+        k9::snapshot!(tester("x + y"), "n:(+ x y)");
+        k9::snapshot!(tester("x +.* y"), "n:((! . + *) x y)");
+        k9::snapshot!(tester("x fold + . * y"), "n:((! . (! fold +) *) x y)");
+        k9::snapshot!(tester("x + . fold * y"), "n:((! . + (! fold *)) x y)");
+        k9::snapshot!(
+            tester("x fold + . fold * y"),
+            "n:((! . (! fold +) (! fold *)) x y)"
+        );
+        k9::snapshot!(
+            tester("x fold * . fold + . fold * y"),
+            "n:((! . (! fold *) (! . (! fold +) (! fold *))) x y)"
+        );
+    }
+
+    #[test]
+    fn test_tuples() {
+        k9::snapshot!(tester("1 + 1 2"), "n:(+ 1 (tuple 1 2))");
+        k9::snapshot!(tester("1 + 1 neg 2"), "n:(+ 1 (tuple 1 (neg 2)))");
+        k9::snapshot!(tester("1 2 + 1 2"), "n:(+ (tuple 1 2) (tuple 1 2))");
+        k9::snapshot!(tester("1 + (1 2) 3"), "n:(+ 1 (tuple ((tuple 1 2)) 3))");
+        k9::snapshot!(tester("1 + (1 2 3)"), "n:(+ 1 ((tuple 1 (tuple 2 3))))");
+        k9::snapshot!(tester("1 + 2; 3"), "n:(tuple ((+ 1 2)) (3))");
     }
 }
