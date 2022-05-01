@@ -9,28 +9,6 @@ pub enum Word {
     Identifier(String),
 }
 
-impl Word {
-    fn delimited(start: &str, words: &[Word], end: &str) -> String {
-        let mut result = start.to_string();
-        result += &words
-            .iter()
-            .map(|word| word.to_short_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        result += end;
-        result
-    }
-
-    fn to_short_string(&self) -> String {
-        match self {
-            Word::Int64(num) => num.to_string(),
-            Word::Identifier(id) => id.to_string(),
-            Word::Parens(words) => Word::delimited("(", words, ")"),
-            Word::Brackets(words) => Word::delimited("[", words, "]"),
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Builtin {
     PartialApplicationLeft,
@@ -41,9 +19,24 @@ pub enum Builtin {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Atom {
+    Int64(i64),
+    Identifier(String),
+}
+
+impl fmt::Display for Atom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Atom::Int64(num) => write!(f, "{}", num),
+            Atom::Identifier(id) => write!(f, "{}", id),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Term {
     Implicit(Builtin),
-    Atom(Word),
+    Atom(Atom),
     Parens(Box<Term>),
     // note: currently tuples and brackets store their elements in reverse order
     Tuple(Vec<Term>),
@@ -68,7 +61,7 @@ impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Term::*;
         match self {
-            Atom(word) => write!(f, "{}", word.to_short_string()),
+            Atom(word) => write!(f, "{}", word),
             Implicit(builtin) => write!(f, "<{}>", builtin),
             Parens(term) => write!(f, "{}", term),
             Brackets(terms) => {
@@ -186,7 +179,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
     use PartOfSpeech::*;
 
     match word {
-        Word::Int64(_) => Ok((Term::Atom(word), Noun)),
+        Word::Int64(num) => Ok((Term::Atom(Atom::Int64(num)), Noun)),
         Word::Identifier(id) => {
             let pos = match id.as_str() {
                 "+" | "*" => Verb(Arity::Binary),
@@ -196,8 +189,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
                 "flip" => Adverb(Arity::Unary, Arity::Binary),
                 _ => Noun,
             };
-            // TODO: how can i borrow id here?
-            Ok((Term::Atom(Word::Identifier(id)), pos))
+            Ok((Term::Atom(Atom::Identifier(id)), pos))
         }
         Word::Parens(mut words) => {
             if words.is_empty() {
@@ -457,12 +449,32 @@ mod tests {
             .join(" ")
     }
 
+    fn delimited(start: &str, words: &[Word], end: &str) -> String {
+        let mut result = start.to_string();
+        result += &words
+            .iter()
+            .map(word_short_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        result += end;
+        result
+    }
+
+    fn word_short_string(word: &Word) -> String {
+        match word {
+            Word::Int64(num) => num.to_string(),
+            Word::Identifier(id) => id.to_string(),
+            Word::Parens(words) => delimited("(", words, ")"),
+            Word::Brackets(words) => delimited("[", words, "]"),
+        }
+    }
+
     fn test(input: &str) -> String {
         let (remaining, tokens) = tokenizer::tokens(input).unwrap();
         if !remaining.is_empty() {
             panic!("unable to tokenize");
         }
-        Word::delimited("", &resolve_semicolons(tokens, Delimiter::Parens), "")
+        delimited("", &resolve_semicolons(tokens, Delimiter::Parens), "")
     }
 
     #[test]
