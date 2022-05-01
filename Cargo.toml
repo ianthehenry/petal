@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 rug = "1.15.0"
 nom = "7.1.1"
+structopt = "0.3.26"
 
 [dev-dependencies]
 k9 = {path = "/Users/ian/src/k9/k9"}

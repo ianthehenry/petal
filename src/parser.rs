@@ -1,6 +1,5 @@
-use super::tokenizer;
+use super::tokenizer::Token;
 use std::fmt;
-use tokenizer::Token;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
@@ -33,7 +32,7 @@ impl Word {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum Builtin {
+pub enum Builtin {
     PartialApplicationLeft,
     PartialApplicationRight,
     Compose,
@@ -42,7 +41,7 @@ enum Builtin {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum Term {
+pub enum Term {
     Implicit(Builtin),
     Atom(Word),
     Parens(Box<Term>),
@@ -100,18 +99,6 @@ impl fmt::Display for Term {
     }
 }
 
-fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
-    let (term, pos) = annotated_term;
-    format!("{}:{}", pos, term)
-}
-fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
-    terms
-        .iter()
-        .map(show_annotated_term)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Delimiter {
     Parens,
@@ -165,13 +152,13 @@ fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum Arity {
+pub enum Arity {
     Unary,
     Binary,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum PartOfSpeech {
+pub enum PartOfSpeech {
     Noun,
     Verb(Arity),
     Adverb(Arity, Arity), // input arity, output arity
@@ -191,7 +178,7 @@ impl fmt::Display for PartOfSpeech {
 }
 
 #[derive(Debug)]
-enum ParseError {
+pub enum ParseError {
     DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
     ArrayLiteralNotNoun,
 }
@@ -217,7 +204,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
             if words.len() == 0 {
                 Ok((Term::Parens(Box::new(Term::Tuple(vec![]))), Noun))
             } else {
-                let (term, pos) = table_parser(&mut words)?;
+                let (term, pos) = parse_words(&mut words)?;
                 Ok((Term::Parens(Box::new(term)), pos))
             }
         }
@@ -225,7 +212,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
             if words.len() == 0 {
                 Ok((Term::Brackets(vec![]), Noun))
             } else {
-                let (term, pos) = table_parser(&mut words)?;
+                let (term, pos) = parse_words(&mut words)?;
                 if pos != Noun {
                     Err(ParseError::ArrayLiteralNotNoun)
                 } else {
@@ -240,7 +227,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
     }
 }
 
-fn table_parser(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
+fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
     use Arity::*;
     use PartOfSpeech::*;
     use Term::*;
@@ -449,16 +436,34 @@ fn table_parser(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseErro
     }
 }
 
+pub fn parse_tokens(tokens: Vec<Token>) -> Result<(Term, PartOfSpeech), ParseError> {
+    let mut words = resolve_semicolons(tokens, Delimiter::Parens);
+    parse_words(&mut words)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::tokenizer;
     use super::*;
 
+    fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
+        let (term, pos) = annotated_term;
+        format!("{}:{}", pos, term)
+    }
+    fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
+        terms
+            .iter()
+            .map(show_annotated_term)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn test(input: &str) -> String {
-        let (remaining, parsed) = tokenizer::tokens(input).unwrap();
+        let (remaining, tokens) = tokenizer::tokens(input).unwrap();
         if !remaining.is_empty() {
-            panic!("not a total parse!");
+            panic!("unable to tokenize");
         }
-        Word::delimited("", &resolve_semicolons(parsed, Delimiter::Parens), "")
+        Word::delimited("", &resolve_semicolons(tokens, Delimiter::Parens), "")
     }
 
     #[test]
@@ -498,7 +503,7 @@ mod tests {
             panic!("not a total parse!");
         }
         let mut words = resolve_semicolons(parsed, Delimiter::Parens);
-        match table_parser(&mut words) {
+        match parse_words(&mut words) {
             Ok(term) => show_annotated_term(&term),
             Err(ParseError::DidNotFullyReduce(terms)) => {
                 format!("incomplete parse: {}", show_annotated_terms(terms))
@@ -508,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn test_table_parser() {
+    fn test_parser() {
         k9::snapshot!(tester("neg 1 + 2"), "n:(neg (+ 1 2))");
         k9::snapshot!(tester("fold +"), "v1:(fold +)");
         k9::snapshot!(tester("fold + x"), "n:((fold +) x)");
