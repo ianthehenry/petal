@@ -32,23 +32,44 @@ impl Word {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Builtin {
+    PartialApplicationLeft,
+    PartialApplicationRight,
+    Compose,
+    ComposeLeft,
+    ComposeRight,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Term {
+    Implicit(Builtin),
     Atom(Word),
     Parens(Box<Term>),
     Brackets(Box<Term>),
-    Tuple(Vec<Term>),
-    FunctionApplication(Box<Term>, Box<Term>),
-    OperatorApplication(Box<Term>, Box<Term>, Box<Term>),
-    AdverbApplication(Box<Term>, Box<Term>),
-    ConjunctionApplication(Box<Term>, Box<Term>, Box<Term>),
+    Tuple(Vec<Term>), // note: currently tuples are stored in reverse order
+    UnaryApplication(Box<Term>, Box<Term>),
+    BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
 }
 
+impl fmt::Display for Builtin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Builtin::*;
+        match self {
+            PartialApplicationLeft => write!(f, "lhs"),
+            PartialApplicationRight => write!(f, "rhs"),
+            Compose => write!(f, "comp"),
+            ComposeLeft => write!(f, "comp-lhs"),
+            ComposeRight => write!(f, "comp-rhs"),
+        }
+    }
+}
 impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Term::*;
         match self {
             Atom(word) => write!(f, "{}", word.to_short_string()),
+            Implicit(builtin) => write!(f, "<{}>", builtin),
             Parens(term) => write!(f, "{}", term),
             Brackets(term) => write!(f, "[{}]", term),
             Tuple(terms) => {
@@ -58,17 +79,11 @@ impl fmt::Display for Term {
                 }
                 write!(f, ")")
             }
-            AdverbApplication(adverb, term) => {
-                write!(f, "(! {} {})", adverb, term)
+            UnaryApplication(func, term) => {
+                write!(f, "({} {})", func, term)
             }
-            ConjunctionApplication(conjunction, lhs, rhs) => {
-                write!(f, "(! {} {} {})", conjunction, lhs, rhs)
-            }
-            FunctionApplication(function, term) => {
-                write!(f, "({} {})", function, term)
-            }
-            OperatorApplication(operator, lhs, rhs) => {
-                write!(f, "({} {} {})", operator, lhs, rhs)
+            BinaryApplication(func, lhs, rhs) => {
+                write!(f, "({} {} {})", func, lhs, rhs)
             }
         }
     }
@@ -157,10 +172,10 @@ impl fmt::Display for PartOfSpeech {
         use PartOfSpeech::*;
         match self {
             Noun => write!(f, "n"),
-            Verb(Arity::Unary) => write!(f, "f"),
-            Verb(Arity::Binary) => write!(f, "o"),
-            Adverb(Arity::Unary, _) => write!(f, "a"),
-            Adverb(Arity::Binary, _) => write!(f, "c"),
+            Verb(Arity::Unary) => write!(f, "v1"),
+            Verb(Arity::Binary) => write!(f, "v2"),
+            Adverb(Arity::Unary, _) => write!(f, "a1"),
+            Adverb(Arity::Binary, _) => write!(f, "a2"),
         }
     }
 }
@@ -173,9 +188,10 @@ fn parse_word(word: Word) -> (Term, PartOfSpeech) {
         Word::Identifier(id) => {
             let pos = match id.as_str() {
                 "+" | "*" => Verb(Arity::Binary),
-                "neg" => Verb(Arity::Unary),
+                "neg" | "sign" => Verb(Arity::Unary),
                 "." => Adverb(Arity::Binary, Arity::Binary),
                 "fold" => Adverb(Arity::Unary, Arity::Unary),
+                "flip" => Adverb(Arity::Unary, Arity::Binary),
                 _ => Noun,
             };
             // TODO: how can i borrow id here?
@@ -238,7 +254,7 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
                 stack.pop().unwrap();
                 stack.pop().unwrap();
                 stack.push(Some((
-                    AdverbApplication(Box::new(adverb), Box::new(verb)),
+                    UnaryApplication(Box::new(adverb), Box::new(verb)),
                     Verb(result_arity),
                 )));
             }
@@ -250,7 +266,7 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
                 stack.pop().unwrap();
                 stack.pop().unwrap();
                 stack.push(Some((
-                    FunctionApplication(Box::new(verb), Box::new(noun)),
+                    UnaryApplication(Box::new(verb), Box::new(noun)),
                     Noun,
                 )));
                 stack.push(stash);
@@ -266,11 +282,12 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
                 stack.pop().unwrap();
                 stack.pop().unwrap();
                 stack.push(Some((
-                    ConjunctionApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
+                    BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
                     Verb(result_arity),
                 )));
                 stack.push(stash);
             }
+
             [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), Some((lhs, Noun)), None | Some((_, Verb(_)))] =>
             {
                 let lhs = lhs.clone();
@@ -281,7 +298,7 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
                 stack.pop().unwrap();
                 stack.pop().unwrap();
                 stack.push(Some((
-                    OperatorApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
+                    BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
                     Noun,
                 )));
                 stack.push(stash);
@@ -303,6 +320,91 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
                 };
 
                 stack.push(Some((result, Noun)));
+                stack.push(stash);
+            }
+
+            [.., Some((g, Verb(Unary))), Some((f, Verb(Unary))), None] => {
+                let f = f.clone();
+                let g = g.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    BinaryApplication(
+                        Box::new(Implicit(Builtin::Compose)),
+                        Box::new(f),
+                        Box::new(g),
+                    ),
+                    Verb(Unary),
+                )));
+                stack.push(stash);
+            }
+
+            [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), None] => {
+                let verb = verb.clone();
+                let rhs = rhs.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    BinaryApplication(
+                        Box::new(Implicit(Builtin::PartialApplicationRight)),
+                        Box::new(verb),
+                        Box::new(rhs),
+                    ),
+                    Verb(Unary),
+                )));
+                stack.push(stash);
+            }
+
+            [.., Some((verb, Verb(Binary))), Some((lhs, Noun)), None] => {
+                let verb = verb.clone();
+                let lhs = lhs.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    BinaryApplication(
+                        Box::new(Implicit(Builtin::PartialApplicationLeft)),
+                        Box::new(verb),
+                        Box::new(lhs),
+                    ),
+                    Verb(Unary),
+                )));
+                stack.push(stash);
+            }
+
+            [.., Some((rhs, Verb(Unary))), Some((verb, Verb(Binary))), None] => {
+                let verb = verb.clone();
+                let rhs = rhs.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    BinaryApplication(
+                        Box::new(Implicit(Builtin::ComposeRight)),
+                        Box::new(verb),
+                        Box::new(rhs),
+                    ),
+                    Verb(Binary),
+                )));
+                stack.push(stash);
+            }
+
+            [.., Some((verb, Verb(Binary))), Some((lhs, Verb(Unary))), None] => {
+                let verb = verb.clone();
+                let lhs = lhs.clone();
+                let stash = stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.pop().unwrap();
+                stack.push(Some((
+                    BinaryApplication(
+                        Box::new(Implicit(Builtin::ComposeLeft)),
+                        Box::new(verb),
+                        Box::new(lhs),
+                    ),
+                    Verb(Binary),
+                )));
                 stack.push(stash);
             }
 
@@ -380,20 +482,26 @@ mod tests {
     #[test]
     fn test_table_parser() {
         k9::snapshot!(tester("neg 1 + 2"), "n:(neg (+ 1 2))");
-        k9::snapshot!(tester("fold +"), "f:(! fold +)");
-        k9::snapshot!(tester("fold + x"), "n:((! fold +) x)");
+        k9::snapshot!(tester("fold +"), "v1:(fold +)");
+        k9::snapshot!(tester("fold + x"), "n:((fold +) x)");
         k9::snapshot!(tester("x + y"), "n:(+ x y)");
-        k9::snapshot!(tester("x +.* y"), "n:((! . + *) x y)");
-        k9::snapshot!(tester("x fold + . * y"), "n:((! . (! fold +) *) x y)");
-        k9::snapshot!(tester("x + . fold * y"), "n:((! . + (! fold *)) x y)");
+        k9::snapshot!(tester("x +.* y"), "n:((. + *) x y)");
+        k9::snapshot!(tester("x fold + . * y"), "n:((. (fold +) *) x y)");
+        k9::snapshot!(tester("x + . fold * y"), "n:((. + (fold *)) x y)");
         k9::snapshot!(
             tester("x fold + . fold * y"),
-            "n:((! . (! fold +) (! fold *)) x y)"
+            "n:((. (fold +) (fold *)) x y)"
         );
         k9::snapshot!(
             tester("x fold * . fold + . fold * y"),
-            "n:((! . (! fold *) (! . (! fold +) (! fold *))) x y)"
+            "n:((. (fold *) (. (fold +) (fold *))) x y)"
         );
+    }
+
+    #[test]
+    fn test_adverbs() {
+        k9::snapshot!(tester("1 + 2"), "n:(+ 1 2)");
+        k9::snapshot!(tester("1 flip + 2"), "n:((flip +) 1 2)");
     }
 
     #[test]
@@ -405,5 +513,54 @@ mod tests {
         k9::snapshot!(tester("1 + (1 2) 3"), "n:(+ 1 (<tuple> (<tuple> 1 2) 3))");
         k9::snapshot!(tester("1 + (1 2 3)"), "n:(+ 1 (<tuple> 1 2 3))");
         k9::snapshot!(tester("1 + 2; 3"), "n:(<tuple> (+ 1 2) 3)");
+    }
+
+    #[test]
+    fn test_operator_sections() {
+        k9::snapshot!(tester("+ 1"), "v1:(<rhs> + 1)");
+        k9::snapshot!(tester("+ 1 2"), "v1:(<rhs> + (<tuple> 1 2))");
+        k9::snapshot!(tester("(+ 1) 2"), "n:((<rhs> + 1) 2)");
+        k9::snapshot!(tester("1 +"), "v1:(<lhs> + 1)");
+        k9::snapshot!(tester("1 2 +"), "v1:(<lhs> + (<tuple> 1 2))");
+
+        k9::snapshot!(tester("flip + 1"), "v1:(<rhs> (flip +) 1)");
+        k9::snapshot!(tester("flip + 1 2"), "v1:(<rhs> (flip +) (<tuple> 1 2))");
+        k9::snapshot!(tester("(flip + 1) 2"), "n:((<rhs> (flip +) 1) 2)");
+        k9::snapshot!(tester("1 flip +"), "v1:(<lhs> (flip +) 1)");
+        k9::snapshot!(tester("1 2 flip +"), "v1:(<lhs> (flip +) (<tuple> 1 2))");
+    }
+
+    #[test]
+    fn test_implicit_composition() {
+        k9::snapshot!(tester("neg sign"), "v1:(<comp> neg sign)");
+        k9::snapshot!(tester("neg sign neg"), "v1:(<comp> (<comp> neg sign) neg)");
+        k9::snapshot!(
+            tester("neg + sign"),
+            "v2:(<comp-rhs> (<comp-lhs> + neg) sign)"
+        );
+        k9::snapshot!(
+            tester("neg sign + neg"),
+            "v2:(<comp-rhs> (<comp-lhs> + (<comp> neg sign)) neg)"
+        );
+        k9::snapshot!(
+            tester("neg + sign neg"),
+            "v2:(<comp-rhs> (<comp-rhs> (<comp-lhs> + neg) sign) neg)"
+        );
+
+        k9::snapshot!(
+            tester("neg + (sign neg)"),
+            "v2:(<comp-rhs> (<comp-lhs> + neg) (<comp> sign neg))"
+        );
+
+        k9::snapshot!(tester("+ neg"), "v2:(<comp-rhs> + neg)");
+        k9::snapshot!(tester("neg +"), "v2:(<comp-lhs> + neg)");
+        k9::snapshot!(tester("neg + 1"), "v1:(<rhs> (<comp-lhs> + neg) 1)");
+
+        k9::snapshot!(tester("flip + neg"), "v2:(<comp-rhs> (flip +) neg)");
+        k9::snapshot!(tester("neg flip +"), "v2:(<comp-lhs> (flip +) neg)");
+        k9::snapshot!(
+            tester("neg flip + 1"),
+            "v1:(<rhs> (<comp-lhs> (flip +) neg) 1)"
+        );
     }
 }
