@@ -1,4 +1,5 @@
 use super::tokenizer;
+use std::fmt;
 use tokenizer::Token;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -7,6 +8,28 @@ pub enum Word {
     Parens(Vec<Word>),
     Brackets(Vec<Word>),
     Identifier(String),
+}
+
+impl Word {
+    fn delimited(start: &str, words: &Vec<Word>, end: &str) -> String {
+        let mut result = start.to_string();
+        result += &words
+            .iter()
+            .map(|word| word.to_short_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        result += end;
+        result
+    }
+
+    fn to_short_string(&self) -> String {
+        match self {
+            Word::Int64(num) => num.to_string(),
+            Word::Identifier(id) => id.to_string(),
+            Word::Parens(words) => Word::delimited("(", words, ")"),
+            Word::Brackets(words) => Word::delimited("[", words, "]"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -24,6 +47,41 @@ enum AnyTerm {
     OperatorApplication(Box<AnyTerm>, Box<AnyTerm>, Box<AnyTerm>),
     AdverbApplication(Box<AnyTerm>, Box<AnyTerm>),
     ConjunctionApplication(Box<AnyTerm>, Box<AnyTerm>, Box<AnyTerm>),
+}
+
+impl fmt::Display for AnyTerm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use AnyTerm::*;
+        match self {
+            Placeholder => write!(f, "_"),
+            Word(word) => write!(f, "{}", word.to_short_string()),
+            AdverbApplication(adverb, term) => {
+                write!(f, "(A {} {})", adverb, term)
+            }
+            ConjunctionApplication(conjunction, lhs, rhs) => {
+                write!(f, "(C {} {} {})", conjunction, lhs, rhs)
+            }
+            FunctionApplication(function, term) => {
+                write!(f, "(F {} {})", function, term)
+            }
+            OperatorApplication(operator, lhs, rhs) => {
+                write!(f, "(O {} {} {})", operator, lhs, rhs)
+            }
+        }
+    }
+}
+
+fn show_annotated_term(annotated_term: &(AnyTerm, PartOfSpeech)) -> String {
+    let (term, pos) = annotated_term;
+    format!("{}:{}", pos, term)
+}
+
+fn show_annotated_terms(terms: Vec<(AnyTerm, PartOfSpeech)>) -> String {
+    terms
+        .iter()
+        .map(show_annotated_term)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -89,6 +147,19 @@ enum PartOfSpeech {
     Noun,
     Verb(Arity),
     Adverb(Arity, Arity), // input arity, output arity
+}
+
+impl fmt::Display for PartOfSpeech {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use PartOfSpeech::*;
+        match self {
+            Noun => write!(f, "n"),
+            Verb(Arity::Unary) => write!(f, "f"),
+            Verb(Arity::Binary) => write!(f, "o"),
+            Adverb(Arity::Unary, _) => write!(f, "a"),
+            Adverb(Arity::Binary, _) => write!(f, "c"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -307,71 +378,31 @@ fn tester(input: &str) -> String {
         .collect::<Vec<_>>();
 
     let mut terms = table_parser(&mut annotated_words);
-    format!("{:?}", terms)
+    show_annotated_terms(terms)
 }
 
 #[test]
 fn test_table_parser() {
-    k9::snapshot!(
-        tester("fold +"),
-        r#"[(AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), Verb(Unary))]"#
-    );
-    k9::snapshot!(
-        tester("fold + x"),
-        r#"[(FunctionApplication(AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), Word(Identifier("x"))), Noun)]"#
-    );
-    k9::snapshot!(
-        tester("x + y"),
-        r#"[(OperatorApplication(Word(Identifier("+")), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
-    );
-    k9::snapshot!(
-        tester("x +.* y"),
-        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), Word(Identifier("+")), Word(Identifier("*"))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
-    );
-    k9::snapshot!(
-        tester("x fold + . * y"),
-        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), Word(Identifier("*"))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
-    );
-    k9::snapshot!(
-        tester("x + . fold * y"),
-        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), Word(Identifier("+")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*")))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
-    );
+    k9::snapshot!(tester("neg 1 + 2"), "n:(F neg (O + 1 2))");
+    k9::snapshot!(tester("fold +"), "f:(A fold +)");
+    k9::snapshot!(tester("fold + x"), "n:(F (A fold +) x)");
+    k9::snapshot!(tester("x + y"), "n:(O + x y)");
+    k9::snapshot!(tester("x +.* y"), "n:(O (C . + *) x y)");
+    k9::snapshot!(tester("x fold + . * y"), "n:(O (C . (A fold +) *) x y)");
+    k9::snapshot!(tester("x + . fold * y"), "n:(O (C . + (A fold *)) x y)");
     k9::snapshot!(
         tester("x fold + . fold * y"),
-        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*")))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+        "n:(O (C . (A fold +) (A fold *)) x y)"
     );
-
     k9::snapshot!(
         tester("x fold * . fold + . fold * y"),
-        r#"[(OperatorApplication(ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*"))), ConjunctionApplication(Word(Identifier(".")), AdverbApplication(Word(Identifier("fold")), Word(Identifier("+"))), AdverbApplication(Word(Identifier("fold")), Word(Identifier("*"))))), Word(Identifier("x")), Word(Identifier("y"))), Noun)]"#
+        "n:(O (C . (A fold *) (C . (A fold +) (A fold *))) x y)"
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    impl Word {
-        fn delimited(start: &str, words: &Vec<Word>, end: &str) -> String {
-            let mut result = start.to_string();
-            result += &words
-                .iter()
-                .map(|word| word.to_short_string())
-                .collect::<Vec<_>>()
-                .join(" ");
-            result += end;
-            result
-        }
-
-        fn to_short_string(&self) -> String {
-            match self {
-                Word::Int64(num) => num.to_string(),
-                Word::Identifier(id) => id.to_string(),
-                Word::Parens(words) => Word::delimited("(", words, ")"),
-                Word::Brackets(words) => Word::delimited("[", words, "]"),
-            }
-        }
-    }
 
     fn test(input: &str) -> String {
         let (remaining, parsed) = tokenizer::tokens(input).unwrap();
@@ -409,75 +440,6 @@ mod tests {
         k9::snapshot!(
             test("(1 2 (3 4; 5 6);; [7; 8])"),
             "(((1 2 ((3 4) (5 6)))) (([[7] [8]])))"
-        );
-    }
-
-    fn show_term(term: &Term) -> String {
-        match term {
-            Term::Word(word) => word.to_short_string(),
-            Term::AdverbApplication(adverb, term) => {
-                format!("({} {})", adverb.to_short_string(), show_term(term))
-            }
-            Term::ConjunctionApplication(conjunction, lhs, rhs) => {
-                format!(
-                    "({} {} {})",
-                    show_term(lhs),
-                    conjunction.to_short_string(),
-                    show_term(rhs)
-                )
-            }
-        }
-    }
-
-    fn show_term_pos(pos: &TermPartOfSpeech) -> String {
-        match pos {
-            TermPartOfSpeech::Noun => "n".to_string(),
-            TermPartOfSpeech::Verb(Arity::Unary) => "v1".to_string(),
-            TermPartOfSpeech::Verb(Arity::Binary) => "v2".to_string(),
-        }
-    }
-
-    fn show_annotated_term(annotated_term: &(Term, TermPartOfSpeech)) -> String {
-        let (term, pos) = annotated_term;
-        format!("{}:{}", show_term(term), show_term_pos(pos))
-    }
-
-    fn show_annotated_terms(terms: Vec<(Term, TermPartOfSpeech)>) -> String {
-        terms
-            .iter()
-            .map(show_annotated_term)
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    fn test_parser(input: &str) -> String {
-        let (remaining, parsed) = tokenizer::tokens(input).unwrap();
-        if !remaining.is_empty() {
-            panic!("not a total parse!");
-        }
-        let words = resolve_semicolons(parsed, Delimiter::Parens);
-        let mut annotated_words = words
-            .into_iter()
-            .map(|x| {
-                let part_of_speech = PartOfSpeech::of_word(&x);
-                (x, part_of_speech)
-            })
-            .collect::<Vec<_>>();
-
-        let mut terms = PartOfSpeech::double_stack_parser(&mut annotated_words);
-        terms.reverse();
-        show_annotated_terms(terms)
-    }
-
-    #[test]
-    fn double_stack_parser() {
-        k9::snapshot!(test_parser("x + y"), "x:n +:v2 y:n");
-        k9::snapshot!(test_parser("x +.* y"), "x:n (+ . *):v2 y:n");
-        k9::snapshot!(test_parser("x fold + . * y"), "x:n ((fold +) . *):v2 y:n");
-        k9::snapshot!(test_parser("x + . fold * y"), "x:n (+ . (fold *)):v2 y:n");
-        k9::snapshot!(
-            test_parser("x fold + . fold * y"),
-            "x:n ((fold +) . (fold *)):v2 y:n"
         );
     }
 }
