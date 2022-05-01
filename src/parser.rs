@@ -104,6 +104,13 @@ fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
     let (term, pos) = annotated_term;
     format!("{}:{}", pos, term)
 }
+fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
+    terms
+        .iter()
+        .map(show_annotated_term)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Delimiter {
@@ -183,11 +190,17 @@ impl fmt::Display for PartOfSpeech {
     }
 }
 
-fn parse_word(word: Word) -> (Term, PartOfSpeech) {
+#[derive(Debug)]
+enum ParseError {
+    DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
+    ArrayLiteralNotNoun,
+}
+
+fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
     use PartOfSpeech::*;
 
     match word {
-        Word::Int64(_) => (Term::Atom(word), Noun),
+        Word::Int64(_) => Ok((Term::Atom(word), Noun)),
         Word::Identifier(id) => {
             let pos = match id.as_str() {
                 "+" | "*" => Verb(Arity::Binary),
@@ -198,35 +211,36 @@ fn parse_word(word: Word) -> (Term, PartOfSpeech) {
                 _ => Noun,
             };
             // TODO: how can i borrow id here?
-            (Term::Atom(Word::Identifier(id)), pos)
+            Ok((Term::Atom(Word::Identifier(id)), pos))
         }
         Word::Parens(mut words) => {
             if words.len() == 0 {
-                (Term::Parens(Box::new(Term::Tuple(vec![]))), Noun)
+                Ok((Term::Parens(Box::new(Term::Tuple(vec![]))), Noun))
             } else {
-                let (term, pos) = table_parser(&mut words);
-                (Term::Parens(Box::new(term)), pos)
+                let (term, pos) = table_parser(&mut words)?;
+                Ok((Term::Parens(Box::new(term)), pos))
             }
         }
         Word::Brackets(mut words) => {
             if words.len() == 0 {
-                (Term::Brackets(vec![]), Noun)
+                Ok((Term::Brackets(vec![]), Noun))
             } else {
-                let (term, pos) = table_parser(&mut words);
+                let (term, pos) = table_parser(&mut words)?;
                 if pos != Noun {
-                    panic!("bracketed array literals can only contain nouns")
+                    Err(ParseError::ArrayLiteralNotNoun)
+                } else {
+                    let terms = match term {
+                        Term::Tuple(terms) => terms,
+                        term => vec![term],
+                    };
+                    Ok((Term::Brackets(terms), pos))
                 }
-                let terms = match term {
-                    Term::Tuple(terms) => terms,
-                    term => vec![term],
-                };
-                (Term::Brackets(terms), pos)
             }
         }
     }
 }
 
-fn table_parser(input: &mut Vec<Word>) -> (Term, PartOfSpeech) {
+fn table_parser(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
     use Arity::*;
     use PartOfSpeech::*;
     use Term::*;
@@ -248,9 +262,6 @@ fn table_parser(input: &mut Vec<Word>) -> (Term, PartOfSpeech) {
         //
         // It might be worth, you know, fixing this at some point.
         match &stack[stack.len() - 4..] {
-            [.., Some((_rhs, Adverb(Unary, _))), Some((_lhs, Adverb(Unary, _)))] => {
-                panic!("adverb precomp")
-            }
             [.., Some((verb, Verb(_))), Some((adverb, Adverb(Unary, result_arity)))] => {
                 let result_arity = result_arity.clone();
                 // TODO: we can pretty easily avoid cloning the terms. slash,
@@ -425,17 +436,17 @@ fn table_parser(input: &mut Vec<Word>) -> (Term, PartOfSpeech) {
                     }
                 }
                 Some(word) => {
-                    stack.push(Some(parse_word(word)));
+                    stack.push(Some(parse_word(word)?));
                 }
             },
         };
     }
-    let mut without_sentinels = stack.into_iter().flatten();
-    let first = without_sentinels.next();
-    if !without_sentinels.next().is_none() {
-        panic!("unable to fully reduce");
+    let without_sentinels = stack.into_iter().flatten().collect::<Vec<_>>();
+    match without_sentinels.len() {
+        0 => panic!("empty parse"),
+        1 => Ok(without_sentinels.into_iter().next().unwrap()),
+        _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
     }
-    first.expect("empty parse")
 }
 
 #[cfg(test)]
@@ -487,8 +498,13 @@ mod tests {
             panic!("not a total parse!");
         }
         let mut words = resolve_semicolons(parsed, Delimiter::Parens);
-        let term = table_parser(&mut words);
-        show_annotated_term(&term)
+        match table_parser(&mut words) {
+            Ok(term) => show_annotated_term(&term),
+            Err(ParseError::DidNotFullyReduce(terms)) => {
+                format!("incomplete parse: {}", show_annotated_terms(terms))
+            }
+            Err(error) => format!("error: {:?}", error),
+        }
     }
 
     #[test]
@@ -585,5 +601,26 @@ mod tests {
             tester("[1 2 3; 4 5 6;; 7 8 9; 10 11 12]"),
             "n:[[[1 2 3] [4 5 6]] [[7 8 9] [10 11 12]]]"
         );
+    }
+
+    #[test]
+    fn test_confusing_expressions() {
+        k9::snapshot!(tester("* 1 +"), "v2:(<comp-lhs> + (<rhs> * 1))");
+        // TODO: this should parse. if the other thing parses, this should parse.
+        k9::snapshot!(tester("* + 1"), "incomplete parse: n:1 v2:+ v2:*");
+        k9::snapshot!(tester("1 * +"), "v2:(<comp-lhs> + (<lhs> * 1))");
+    }
+
+    #[test]
+    fn test_parse_errors() {
+        k9::snapshot!(tester("* +"), "incomplete parse: v2:+ v2:*");
+        k9::snapshot!(tester("* flip +"), "incomplete parse: v2:(flip +) v2:*");
+        k9::snapshot!(tester(". +"), "incomplete parse: v2:+ a2:.");
+        k9::snapshot!(tester("+ ."), "incomplete parse: a2:. v2:+");
+        k9::snapshot!(tester("flip ."), "incomplete parse: a2:. a1:flip");
+        k9::snapshot!(tester("fold ."), "incomplete parse: a2:. a1:fold");
+        k9::snapshot!(tester(". flip"), "incomplete parse: a1:flip a2:.");
+        k9::snapshot!(tester(". fold"), "incomplete parse: a1:fold a2:.");
+        k9::snapshot!(tester("flip fold"), "incomplete parse: a1:fold a1:flip");
     }
 }
