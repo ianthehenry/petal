@@ -46,8 +46,9 @@ enum Term {
     Implicit(Builtin),
     Atom(Word),
     Parens(Box<Term>),
+    // note: currently tuples and brackets store their elements in reverse order
+    Tuple(Vec<Term>),
     Brackets(Vec<Term>),
-    Tuple(Vec<Term>), // note: currently tuples are stored in reverse order
     UnaryApplication(Box<Term>, Box<Term>),
     BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
 }
@@ -102,14 +103,6 @@ impl fmt::Display for Term {
 fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
     let (term, pos) = annotated_term;
     format!("{}:{}", pos, term)
-}
-
-fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
-    terms
-        .iter()
-        .map(show_annotated_term)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -211,39 +204,29 @@ fn parse_word(word: Word) -> (Term, PartOfSpeech) {
             if words.len() == 0 {
                 (Term::Parens(Box::new(Term::Tuple(vec![]))), Noun)
             } else {
-                let terms = table_parser(&mut words);
-                if terms.len() == 1 {
-                    let (term, pos) = terms.into_iter().next().unwrap();
-                    (Term::Parens(Box::new(term)), pos)
-                } else {
-                    panic!("failed to parse parenthesized expression")
-                }
+                let (term, pos) = table_parser(&mut words);
+                (Term::Parens(Box::new(term)), pos)
             }
         }
         Word::Brackets(mut words) => {
             if words.len() == 0 {
                 (Term::Brackets(vec![]), Noun)
             } else {
-                let terms = table_parser(&mut words);
-                if terms.len() == 1 {
-                    let (term, pos) = terms.into_iter().next().unwrap();
-                    if pos != Noun {
-                        panic!("bracketed array literals can only contain nouns")
-                    }
-                    let terms = match term {
-                        Term::Tuple(terms) => terms,
-                        term => vec![term],
-                    };
-                    (Term::Brackets(terms), pos)
-                } else {
-                    panic!("failed to parse bracketed array literal")
+                let (term, pos) = table_parser(&mut words);
+                if pos != Noun {
+                    panic!("bracketed array literals can only contain nouns")
                 }
+                let terms = match term {
+                    Term::Tuple(terms) => terms,
+                    term => vec![term],
+                };
+                (Term::Brackets(terms), pos)
             }
         }
     }
 }
 
-fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
+fn table_parser(input: &mut Vec<Word>) -> (Term, PartOfSpeech) {
     use Arity::*;
     use PartOfSpeech::*;
     use Term::*;
@@ -447,7 +430,12 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
             },
         };
     }
-    stack.into_iter().flatten().collect::<Vec<_>>()
+    let mut without_sentinels = stack.into_iter().flatten();
+    let first = without_sentinels.next();
+    if !without_sentinels.next().is_none() {
+        panic!("unable to fully reduce");
+    }
+    first.expect("empty parse")
 }
 
 #[cfg(test)]
@@ -499,8 +487,8 @@ mod tests {
             panic!("not a total parse!");
         }
         let mut words = resolve_semicolons(parsed, Delimiter::Parens);
-        let terms = table_parser(&mut words);
-        show_annotated_terms(terms)
+        let term = table_parser(&mut words);
+        show_annotated_term(&term)
     }
 
     #[test]
