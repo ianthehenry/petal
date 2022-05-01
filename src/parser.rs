@@ -34,24 +34,17 @@ impl Word {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Term {
-    Word(Word),
-    AdverbApplication(Word, Box<Term>),
-    ConjunctionApplication(Word, Box<Term>, Box<Term>),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum AnyTerm {
     Placeholder,
     Word(Word),
-    FunctionApplication(Box<AnyTerm>, Box<AnyTerm>),
-    OperatorApplication(Box<AnyTerm>, Box<AnyTerm>, Box<AnyTerm>),
-    AdverbApplication(Box<AnyTerm>, Box<AnyTerm>),
-    ConjunctionApplication(Box<AnyTerm>, Box<AnyTerm>, Box<AnyTerm>),
+    FunctionApplication(Box<Term>, Box<Term>),
+    OperatorApplication(Box<Term>, Box<Term>, Box<Term>),
+    AdverbApplication(Box<Term>, Box<Term>),
+    ConjunctionApplication(Box<Term>, Box<Term>, Box<Term>),
 }
 
-impl fmt::Display for AnyTerm {
+impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use AnyTerm::*;
+        use Term::*;
         match self {
             Placeholder => write!(f, "_"),
             Word(word) => write!(f, "{}", word.to_short_string()),
@@ -71,12 +64,12 @@ impl fmt::Display for AnyTerm {
     }
 }
 
-fn show_annotated_term(annotated_term: &(AnyTerm, PartOfSpeech)) -> String {
+fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
     let (term, pos) = annotated_term;
     format!("{}:{}", pos, term)
 }
 
-fn show_annotated_terms(terms: Vec<(AnyTerm, PartOfSpeech)>) -> String {
+fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
     terms
         .iter()
         .map(show_annotated_term)
@@ -162,18 +155,6 @@ impl fmt::Display for PartOfSpeech {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum TermPartOfSpeech {
-    Noun,
-    Verb(Arity),
-}
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum TermPopError {
-    EndOfInput,
-    Conjunction,
-}
-
 impl PartOfSpeech {
     fn of_word(word: &Word) -> Self {
         use PartOfSpeech::*;
@@ -190,55 +171,6 @@ impl PartOfSpeech {
             Word::Parens(words) => Self::of_words(words),
             Word::Brackets(_) => Noun,
         }
-    }
-
-    fn double_stack_parser(stack: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, TermPartOfSpeech)> {
-        let mut term_stack = vec![];
-
-        while !stack.is_empty() {
-            let next = stack.pop().unwrap();
-            match &next {
-                (word, PartOfSpeech::Noun) => {
-                    term_stack.push((Term::Word(word.clone()), TermPartOfSpeech::Noun))
-                }
-                (word, PartOfSpeech::Verb(arity)) => term_stack.push((
-                    Term::Word(word.clone()),
-                    TermPartOfSpeech::Verb(arity.clone()),
-                )),
-                (adverb, PartOfSpeech::Adverb(Arity::Unary, out_arity)) => {
-                    let (arg, _arg_pos) = term_stack
-                        .pop()
-                        .expect("adverb has nothing to apply itself to");
-
-                    term_stack.push((
-                        Term::AdverbApplication(adverb.clone(), Box::new(arg)),
-                        TermPartOfSpeech::Verb(out_arity.clone()),
-                    ))
-                }
-                (conjunction, PartOfSpeech::Adverb(Arity::Binary, out_arity)) => {
-                    let (rhs, _rhs_pos) = term_stack.pop().expect("conjunction has no rhs");
-                    let mut lefthand_terms = Self::double_stack_parser(stack);
-                    // TODO: we just made ourselves unnecessarily quadratic.
-                    // should return a deque or somthing instead.
-                    lefthand_terms.reverse();
-                    let (lhs, _lhs_pos) = lefthand_terms.pop().expect("conjunction has no lhs");
-                    term_stack.push((
-                        Term::ConjunctionApplication(
-                            conjunction.clone(),
-                            Box::new(lhs),
-                            Box::new(rhs),
-                        ),
-                        TermPartOfSpeech::Verb(out_arity.clone()),
-                    ));
-
-                    while !lefthand_terms.is_empty() {
-                        term_stack.push(lefthand_terms.pop().unwrap())
-                    }
-                }
-            }
-        }
-
-        term_stack
     }
 
     // TODO: obviously this doesn't work at all
@@ -264,12 +196,12 @@ impl PartOfSpeech {
     }
 }
 
-fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(AnyTerm, PartOfSpeech)> {
-    use AnyTerm::*;
+fn table_parser(input: &mut Vec<(Word, PartOfSpeech)>) -> Vec<(Term, PartOfSpeech)> {
     use Arity::*;
     use PartOfSpeech::*;
+    use Term::*;
     let mut end_reached = false;
-    let mut stack: Vec<Option<(AnyTerm, PartOfSpeech)>> = vec![None, None, None, None];
+    let mut stack: Vec<Option<(Term, PartOfSpeech)>> = vec![None, None, None, None];
     loop {
         // These patterns are sort of written backwards from how I want to think
         // of them. We're walking right-to-left through the input tokens:
