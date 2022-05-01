@@ -59,7 +59,7 @@ fn prim_add(left: ArrayView<i64>, right: ArrayView<i64>) -> Array<i64> {
     let result_values = left.iter().zip(right.iter()).map(|(x, y)| x + y).collect();
 
     Array {
-        shape: left.shape.clone(),
+        shape: left.shape,
         data: result_values,
     }
 }

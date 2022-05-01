@@ -46,7 +46,7 @@ impl<'a, T> ArrayView<'a, T> {
             slice_shape: cells.to_vec(),
             slice_length: cells.iter().product(),
             slice_count: frame.iter().product(),
-            data: &self.data,
+            data: self.data,
         }
     }
 
@@ -61,7 +61,7 @@ impl<'a, T> ArrayView<'a, T> {
         AtomIterator {
             index: 0,
             atom_count: self.shape.iter().product(),
-            data: &self.data,
+            data: self.data,
         }
     }
 }

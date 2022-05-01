@@ -10,7 +10,7 @@ pub enum Word {
 }
 
 impl Word {
-    fn delimited(start: &str, words: &Vec<Word>, end: &str) -> String {
+    fn delimited(start: &str, words: &[Word], end: &str) -> String {
         let mut result = start.to_string();
         result += &words
             .iter()
@@ -134,11 +134,10 @@ fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
                 }
                 let next_index = index_levels[level - 1] + 1;
 
-                for i in 0..level {
-                    let start_index = index_levels[i];
-                    let to_wrap = words.drain(start_index..).collect();
+                for start_index in index_levels.iter_mut().take(level) {
+                    let to_wrap = words.drain(*start_index..).collect();
                     words.push(delimiter.wrap(to_wrap));
-                    index_levels[i] = next_index;
+                    *start_index = next_index;
                 }
             }
         }
@@ -201,7 +200,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
             Ok((Term::Atom(Word::Identifier(id)), pos))
         }
         Word::Parens(mut words) => {
-            if words.len() == 0 {
+            if words.is_empty() {
                 Ok((Term::Parens(Box::new(Term::Tuple(vec![]))), Noun))
             } else {
                 let (term, pos) = parse_words(&mut words)?;
@@ -209,7 +208,7 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
             }
         }
         Word::Brackets(mut words) => {
-            if words.len() == 0 {
+            if words.is_empty() {
                 Ok((Term::Brackets(vec![]), Noun))
             } else {
                 let (term, pos) = parse_words(&mut words)?;
@@ -250,7 +249,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
         // It might be worth, you know, fixing this at some point.
         match &stack[stack.len() - 4..] {
             [.., Some((verb, Verb(_))), Some((adverb, Adverb(Unary, result_arity)))] => {
-                let result_arity = result_arity.clone();
+                let result_arity = *result_arity;
                 // TODO: we can pretty easily avoid cloning the terms. slash,
                 // like, this entire situation can be greatly simplified by a
                 // typed stack helper thing
@@ -280,7 +279,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
             {
                 let lhs = lhs.clone();
                 let verb = verb.clone();
-                let result_arity = result_arity.clone();
+                let result_arity = *result_arity;
                 let rhs = rhs.clone();
                 let stash = stack.pop().unwrap();
                 stack.pop().unwrap();

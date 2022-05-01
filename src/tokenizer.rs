@@ -25,48 +25,47 @@ pub enum Token {
 // TODO: obviously this is terrible. also it might make sense to wait to convert
 // this into an actual number until later in the pipeline. also we might need to
 // special-case rational numbers at some point huh.
-fn number<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn number(i: &str) -> IResult<&str, Token> {
     let (i, sign): (_, i64) = alt((char('-').map(|_| -1), success(1)))(i)?;
-    let x = map_res(digit1, |digit_str: &str| {
+    map_res(digit1, move |digit_str: &str| {
         (digit_str.parse::<i64>()).map(|num| Token::Int64(sign * num))
-    })(i);
-    x
+    })(i)
 }
 
-fn identifier<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn identifier(i: &str) -> IResult<&str, Token> {
     map(alpha1, |sym_str: &str| {
         Token::Identifier(sym_str.to_string())
     })(i)
 }
 
-fn brackets<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn brackets(i: &str) -> IResult<&str, Token> {
     map(delimited(char('['), tokens, char(']')), |tokens| {
         Token::Brackets(tokens)
     })(i)
 }
 
-fn parens<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn parens(i: &str) -> IResult<&str, Token> {
     map(delimited(char('('), tokens, char(')')), |tokens| {
         Token::Parens(tokens)
     })(i)
 }
 
-fn unary_negation<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn unary_negation(i: &str) -> IResult<&str, Token> {
     // TODO: probably this should be some kind of builtin
     map(preceded(char('-'), token), |token| {
         Token::Parens(vec![Token::Identifier("neg".to_string()), token])
     })(i)
 }
 
-fn operator<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn operator(i: &str) -> IResult<&str, Token> {
     map(one_of("+-*."), |op| Token::Identifier(op.to_string()))(i)
 }
 
-fn semicolons<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn semicolons(i: &str) -> IResult<&str, Token> {
     map(many1(char(';')), |semis| Token::Semicolons(semis.len()))(i)
 }
 
-fn token<'a>(i: &'a str) -> IResult<&'a str, Token> {
+fn token(i: &str) -> IResult<&str, Token> {
     alt((
         number,
         unary_negation,
@@ -82,7 +81,7 @@ fn flatten_tokens(tokens: Vec<Vec<Token>>) -> Vec<Token> {
     tokens.into_iter().flatten().collect()
 }
 
-fn compound_token<'a>(i: &'a str) -> IResult<&'a str, Vec<Token>> {
+fn compound_token(i: &str) -> IResult<&str, Vec<Token>> {
     map(
         many1(tuple((token, opt(tag("-")))).map(|(token, subtraction)| {
             if let Some(op) = subtraction {
@@ -95,7 +94,7 @@ fn compound_token<'a>(i: &'a str) -> IResult<&'a str, Vec<Token>> {
     )(i)
 }
 
-pub fn tokens<'a>(i: &'a str) -> IResult<&'a str, Vec<Token>> {
+pub fn tokens(i: &str) -> IResult<&str, Vec<Token>> {
     map(separated_list0(multispace1, compound_token), flatten_tokens)(i)
 }
 
