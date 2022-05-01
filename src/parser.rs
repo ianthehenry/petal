@@ -24,13 +24,23 @@ pub enum Atom {
     Identifier(String),
 }
 
-impl fmt::Display for Atom {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Atom::Int64(num) => write!(f, "{}", num),
-            Atom::Identifier(id) => write!(f, "{}", id),
-        }
-    }
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+enum Delimiter {
+    Parens,
+    Brackets,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum Arity {
+    Unary,
+    Binary,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum PartOfSpeech {
+    Noun,
+    Verb(Arity),
+    Adverb(Arity, Arity), // input arity, output arity
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -43,6 +53,21 @@ pub enum Term {
     Brackets(Vec<Term>),
     UnaryApplication(Box<Term>, Box<Term>),
     BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
+}
+
+#[derive(Debug)]
+pub enum ParseError {
+    DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
+    ArrayLiteralNotNoun,
+}
+
+impl fmt::Display for Atom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Atom::Int64(num) => write!(f, "{}", num),
+            Atom::Identifier(id) => write!(f, "{}", id),
+        }
+    }
 }
 
 impl fmt::Display for Builtin {
@@ -92,10 +117,17 @@ impl fmt::Display for Term {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum Delimiter {
-    Parens,
-    Brackets,
+impl fmt::Display for PartOfSpeech {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use PartOfSpeech::*;
+        match self {
+            Noun => write!(f, "n"),
+            Verb(Arity::Unary) => write!(f, "v1"),
+            Verb(Arity::Binary) => write!(f, "v2"),
+            Adverb(Arity::Unary, _) => write!(f, "a1"),
+            Adverb(Arity::Binary, _) => write!(f, "a2"),
+        }
+    }
 }
 
 impl Delimiter {
@@ -141,38 +173,6 @@ fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
         words.push(delimiter.wrap(to_wrap));
     }
     words
-}
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum Arity {
-    Unary,
-    Binary,
-}
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum PartOfSpeech {
-    Noun,
-    Verb(Arity),
-    Adverb(Arity, Arity), // input arity, output arity
-}
-
-impl fmt::Display for PartOfSpeech {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use PartOfSpeech::*;
-        match self {
-            Noun => write!(f, "n"),
-            Verb(Arity::Unary) => write!(f, "v1"),
-            Verb(Arity::Binary) => write!(f, "v2"),
-            Adverb(Arity::Unary, _) => write!(f, "a1"),
-            Adverb(Arity::Binary, _) => write!(f, "a2"),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum ParseError {
-    DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
-    ArrayLiteralNotNoun,
 }
 
 fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
