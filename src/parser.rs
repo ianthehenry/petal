@@ -46,7 +46,7 @@ enum Term {
     Implicit(Builtin),
     Atom(Word),
     Parens(Box<Term>),
-    Brackets(Box<Term>),
+    Brackets(Vec<Term>),
     Tuple(Vec<Term>), // note: currently tuples are stored in reverse order
     UnaryApplication(Box<Term>, Box<Term>),
     BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
@@ -71,7 +71,17 @@ impl fmt::Display for Term {
             Atom(word) => write!(f, "{}", word.to_short_string()),
             Implicit(builtin) => write!(f, "<{}>", builtin),
             Parens(term) => write!(f, "{}", term),
-            Brackets(term) => write!(f, "[{}]", term),
+            Brackets(terms) => {
+                write!(f, "[")?;
+                for (i, term) in terms.iter().rev().enumerate() {
+                    if i != 0 {
+                        write!(f, " ")?;
+                    }
+
+                    write!(f, "{}", term)?;
+                }
+                write!(f, "]")
+            }
             Tuple(terms) => {
                 write!(f, "(<tuple>")?;
                 for term in terms.iter().rev() {
@@ -198,24 +208,36 @@ fn parse_word(word: Word) -> (Term, PartOfSpeech) {
             (Term::Atom(Word::Identifier(id)), pos)
         }
         Word::Parens(mut words) => {
-            let terms = table_parser(&mut words);
-            if terms.len() == 1 {
-                let (term, pos) = terms.into_iter().next().unwrap();
-                (Term::Parens(Box::new(term)), pos)
+            if words.len() == 0 {
+                (Term::Parens(Box::new(Term::Tuple(vec![]))), Noun)
             } else {
-                panic!("failed to parse parenthesized expression")
+                let terms = table_parser(&mut words);
+                if terms.len() == 1 {
+                    let (term, pos) = terms.into_iter().next().unwrap();
+                    (Term::Parens(Box::new(term)), pos)
+                } else {
+                    panic!("failed to parse parenthesized expression")
+                }
             }
         }
         Word::Brackets(mut words) => {
-            let terms = table_parser(&mut words);
-            if terms.len() == 1 {
-                let (term, pos) = terms.into_iter().next().unwrap();
-                if pos != Noun {
-                    panic!("bracketed array literals can only contain nouns")
-                }
-                (Term::Brackets(Box::new(term)), pos)
+            if words.len() == 0 {
+                (Term::Brackets(vec![]), Noun)
             } else {
-                panic!("failed to parse bracketed array literal")
+                let terms = table_parser(&mut words);
+                if terms.len() == 1 {
+                    let (term, pos) = terms.into_iter().next().unwrap();
+                    if pos != Noun {
+                        panic!("bracketed array literals can only contain nouns")
+                    }
+                    let terms = match term {
+                        Term::Tuple(terms) => terms,
+                        term => vec![term],
+                    };
+                    (Term::Brackets(terms), pos)
+                } else {
+                    panic!("failed to parse bracketed array literal")
+                }
             }
         }
     }
@@ -240,6 +262,8 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
         // 2 + twice
         // 2 (+ twice)
         // 2 (+ twice) 1
+        //
+        // It might be worth, you know, fixing this at some point.
         match &stack[stack.len() - 4..] {
             [.., Some((_rhs, Adverb(Unary, _))), Some((_lhs, Adverb(Unary, _)))] => {
                 panic!("adverb precomp")
@@ -561,6 +585,17 @@ mod tests {
         k9::snapshot!(
             tester("neg flip + 1"),
             "v1:(<rhs> (<comp-lhs> (flip +) neg) 1)"
+        );
+    }
+
+    #[test]
+    fn test_array_literals() {
+        k9::snapshot!(tester("[]"), "n:[]");
+        k9::snapshot!(tester("[1 2 3]"), "n:[1 2 3]");
+        k9::snapshot!(tester("[1 2 3; 4 5 6]"), "n:[[1 2 3] [4 5 6]]");
+        k9::snapshot!(
+            tester("[1 2 3; 4 5 6;; 7 8 9; 10 11 12]"),
+            "n:[[[1 2 3] [4 5 6]] [[7 8 9] [10 11 12]]]"
         );
     }
 }
