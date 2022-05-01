@@ -37,7 +37,7 @@ enum Term {
     Atom(Word),
     Parens(Box<Term>),
     Brackets(Box<Term>),
-    Tuple(Box<Term>, Box<Term>),
+    Tuple(Vec<Term>),
     FunctionApplication(Box<Term>, Box<Term>),
     OperatorApplication(Box<Term>, Box<Term>, Box<Term>),
     AdverbApplication(Box<Term>, Box<Term>),
@@ -49,10 +49,14 @@ impl fmt::Display for Term {
         use Term::*;
         match self {
             Atom(word) => write!(f, "{}", word.to_short_string()),
-            Parens(term) => write!(f, "({})", term),
+            Parens(term) => write!(f, "{}", term),
             Brackets(term) => write!(f, "[{}]", term),
-            Tuple(fst, snd) => {
-                write!(f, "(tuple {} {})", fst, snd)
+            Tuple(terms) => {
+                write!(f, "(<tuple>")?;
+                for term in terms.iter().rev() {
+                    write!(f, " {}", term)?;
+                }
+                write!(f, ")")
             }
             AdverbApplication(adverb, term) => {
                 write!(f, "(! {} {})", adverb, term)
@@ -289,7 +293,16 @@ fn table_parser(input: &mut Vec<Word>) -> Vec<(Term, PartOfSpeech)> {
                 let stash = stack.pop().unwrap();
                 stack.pop().unwrap();
                 stack.pop().unwrap();
-                stack.push(Some((Tuple(Box::new(first), Box::new(second)), Noun)));
+
+                let result = match second {
+                    Tuple(mut terms) => {
+                        terms.push(first);
+                        Tuple(terms)
+                    }
+                    _ => Tuple(vec![second, first]),
+                };
+
+                stack.push(Some((result, Noun)));
                 stack.push(stash);
             }
 
@@ -385,11 +398,12 @@ mod tests {
 
     #[test]
     fn test_tuples() {
-        k9::snapshot!(tester("1 + 1 2"), "n:(+ 1 (tuple 1 2))");
-        k9::snapshot!(tester("1 + 1 neg 2"), "n:(+ 1 (tuple 1 (neg 2)))");
-        k9::snapshot!(tester("1 2 + 1 2"), "n:(+ (tuple 1 2) (tuple 1 2))");
-        k9::snapshot!(tester("1 + (1 2) 3"), "n:(+ 1 (tuple ((tuple 1 2)) 3))");
-        k9::snapshot!(tester("1 + (1 2 3)"), "n:(+ 1 ((tuple 1 (tuple 2 3))))");
-        k9::snapshot!(tester("1 + 2; 3"), "n:(tuple ((+ 1 2)) (3))");
+        k9::snapshot!(tester("1 + 1 2"), "n:(+ 1 (<tuple> 1 2))");
+        k9::snapshot!(tester("1 + 1 2 3 4 5"), "n:(+ 1 (<tuple> 1 2 3 4 5))");
+        k9::snapshot!(tester("1 + 1 neg 2"), "n:(+ 1 (<tuple> 1 (neg 2)))");
+        k9::snapshot!(tester("1 2 + 1 2"), "n:(+ (<tuple> 1 2) (<tuple> 1 2))");
+        k9::snapshot!(tester("1 + (1 2) 3"), "n:(+ 1 (<tuple> (<tuple> 1 2) 3))");
+        k9::snapshot!(tester("1 + (1 2 3)"), "n:(+ 1 (<tuple> 1 2 3))");
+        k9::snapshot!(tester("1 + 2; 3"), "n:(<tuple> (+ 1 2) 3)");
     }
 }
