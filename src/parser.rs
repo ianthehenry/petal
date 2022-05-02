@@ -381,7 +381,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 stack.push(stash);
             }
 
-            stack![s, v2, n] => {
+            stack![sv, v2, n] => {
                 let stash = stack.pop().unwrap();
                 let verb = pop_term(&mut stack);
                 let rhs = pop_term(&mut stack);
@@ -638,14 +638,11 @@ mod tests {
 
         k9::snapshot!(tester("+ neg"), "v2:(<comp-rhs> + neg)");
         k9::snapshot!(tester("neg +"), "v2:(<comp-lhs> + neg)");
-        k9::snapshot!(tester("neg + 1"), "v1:(<rhs> (<comp-lhs> + neg) 1)");
+        k9::snapshot!(tester("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
 
         k9::snapshot!(tester("flip + neg"), "v2:(<comp-rhs> (flip +) neg)");
         k9::snapshot!(tester("neg flip +"), "v2:(<comp-lhs> (flip +) neg)");
-        k9::snapshot!(
-            tester("neg flip + 1"),
-            "v1:(<rhs> (<comp-lhs> (flip +) neg) 1)"
-        );
+        k9::snapshot!(tester("neg flip + 1"), "v1:(<comp> neg (<rhs> (flip +) 1))");
     }
 
     #[test]
@@ -662,8 +659,7 @@ mod tests {
     #[test]
     fn test_confusing_expressions() {
         k9::snapshot!(tester("* 1 +"), "v2:(<comp-lhs> + (<rhs> * 1))");
-        // TODO: this should parse. if the other thing parses, this should parse.
-        k9::snapshot!(tester("* + 1"), "incomplete parse: n:1 v2:+ v2:*");
+        k9::snapshot!(tester("* + 1"), "v2:(<comp-rhs> * (<rhs> + 1))");
         k9::snapshot!(tester("1 * +"), "v2:(<comp-lhs> + (<lhs> * 1))");
     }
 
