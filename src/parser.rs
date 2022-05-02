@@ -231,6 +231,44 @@ fn pop_adverb(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> (Term, Arity) {
     }
 }
 
+macro_rules! lookahead {
+    ($stack:ident, $block:block) => {{
+        let stash = $stack.pop().unwrap();
+        $block;
+        $stack.push(stash);
+    }};
+}
+
+macro_rules! bin_impl_lr {
+    ($stack:ident, $inner:path, $pos:expr) => {
+        let lhs = pop_term(&mut $stack);
+        let rhs = pop_term(&mut $stack);
+        $stack.push(Some((
+            BinaryApplication(
+                Box::new(Term::Implicit($inner)),
+                Box::new(lhs),
+                Box::new(rhs),
+            ),
+            $pos,
+        )));
+    };
+}
+
+macro_rules! bin_impl_rl {
+    ($stack:ident, $inner:expr, $pos:expr) => {
+        let rhs = pop_term(&mut $stack);
+        let lhs = pop_term(&mut $stack);
+        $stack.push(Some((
+            BinaryApplication(
+                Box::new(Term::Implicit($inner)),
+                Box::new(lhs),
+                Box::new(rhs),
+            ),
+            $pos,
+        )));
+    };
+}
+
 macro_rules! pos {
     (s) => {
         None
@@ -313,19 +351,16 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 )));
             }
 
-            stack![svn, v1, n] => {
-                let stash = stack.pop().unwrap();
+            stack![svn, v1, n] => lookahead!(stack, {
                 let verb = pop_term(&mut stack);
                 let noun = pop_term(&mut stack);
                 stack.push(Some((
                     UnaryApplication(Box::new(verb), Box::new(noun)),
                     Noun,
                 )));
-                stack.push(stash);
-            }
+            }),
 
-            stack![_, vn, a2, vn] => {
-                let stash = stack.pop().unwrap();
+            stack![_, vn, a2, vn] => lookahead!(stack, {
                 let lhs = pop_term(&mut stack);
                 let (conjunction, result_arity) = pop_adverb(&mut stack);
                 let rhs = pop_term(&mut stack);
@@ -333,11 +368,9 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                     BinaryApplication(Box::new(conjunction), Box::new(lhs), Box::new(rhs)),
                     Verb(result_arity),
                 )));
-                stack.push(stash);
-            }
+            }),
 
-            stack![sv, n, v2, n] => {
-                let stash = stack.pop().unwrap();
+            stack![sv, n, v2, n] => lookahead!(stack, {
                 let lhs = pop_term(&mut stack);
                 let verb = pop_term(&mut stack);
                 let rhs = pop_term(&mut stack);
@@ -345,11 +378,9 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                     BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
                     Noun,
                 )));
-                stack.push(stash);
-            }
+            }),
 
-            stack![svn, n, n] => {
-                let stash = stack.pop().unwrap();
+            stack![svn, n, n] => lookahead!(stack, {
                 let first = pop_term(&mut stack);
                 let second = pop_term(&mut stack);
 
@@ -362,84 +393,28 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 };
 
                 stack.push(Some((result, Noun)));
-                stack.push(stash);
-            }
+            }),
 
-            stack![s, v1, v1] => {
-                let stash = stack.pop().unwrap();
-                let f = pop_term(&mut stack);
-                let g = pop_term(&mut stack);
+            stack![s, v1, v1] => lookahead!(stack, {
+                bin_impl_lr!(stack, Builtin::Compose, Verb(Unary));
+            }),
 
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::Compose)),
-                        Box::new(f),
-                        Box::new(g),
-                    ),
-                    Verb(Unary),
-                )));
-                stack.push(stash);
-            }
+            stack![sv, v2, n] => lookahead!(stack, {
+                bin_impl_lr!(stack, Builtin::PartialApplicationRight, Verb(Unary));
+            }),
 
-            stack![sv, v2, n] => {
-                let stash = stack.pop().unwrap();
-                let verb = pop_term(&mut stack);
-                let rhs = pop_term(&mut stack);
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::PartialApplicationRight)),
-                        Box::new(verb),
-                        Box::new(rhs),
-                    ),
-                    Verb(Unary),
-                )));
-                stack.push(stash);
-            }
+            stack![s, n, v2] => lookahead!(stack, {
+                bin_impl_rl!(stack, Builtin::PartialApplicationLeft, Verb(Unary));
+            }),
 
-            stack![s, n, v2] => {
-                let stash = stack.pop().unwrap();
-                let lhs = pop_term(&mut stack);
-                let verb = pop_term(&mut stack);
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::PartialApplicationLeft)),
-                        Box::new(verb),
-                        Box::new(lhs),
-                    ),
-                    Verb(Unary),
-                )));
-                stack.push(stash);
-            }
+            stack![s, v2, v1] => lookahead!(stack, {
+                bin_impl_lr!(stack, Builtin::ComposeRight, Verb(Binary));
+            }),
 
-            stack![s, v2, v1] => {
-                let stash = stack.pop().unwrap();
-                let verb = pop_term(&mut stack);
-                let f = pop_term(&mut stack);
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::ComposeRight)),
-                        Box::new(verb),
-                        Box::new(f),
-                    ),
-                    Verb(Binary),
-                )));
-                stack.push(stash);
-            }
+            stack![s, v1, v2] => lookahead!(stack, {
+                bin_impl_rl!(stack, Builtin::ComposeLeft, Verb(Binary));
+            }),
 
-            stack![s, v1, v2] => {
-                let stash = stack.pop().unwrap();
-                let f = pop_term(&mut stack);
-                let verb = pop_term(&mut stack);
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::ComposeLeft)),
-                        Box::new(verb),
-                        Box::new(f),
-                    ),
-                    Verb(Binary),
-                )));
-                stack.push(stash);
-            }
             _ => {
                 match input.pop() {
                     None => {
