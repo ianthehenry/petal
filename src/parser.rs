@@ -395,7 +395,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 stack.push(Some((result, Noun)));
             }),
 
-            stack![s, v1, v1] => lookahead!(stack, {
+            stack![sv, v1, v1] => lookahead!(stack, {
                 bin_impl_lr!(stack, Builtin::Compose, Verb(Unary));
             }),
 
@@ -403,7 +403,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 bin_impl_lr!(stack, Builtin::PartialApplicationRight, Verb(Unary));
             }),
 
-            stack![s, n, v2] => lookahead!(stack, {
+            stack![sv, n, v2] => lookahead!(stack, {
                 bin_impl_rl!(stack, Builtin::PartialApplicationLeft, Verb(Unary));
             }),
 
@@ -411,7 +411,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 bin_impl_lr!(stack, Builtin::ComposeRight, Verb(Binary));
             }),
 
-            stack![s, v1, v2] => lookahead!(stack, {
+            stack![sv, v1, v2] => lookahead!(stack, {
                 bin_impl_rl!(stack, Builtin::ComposeLeft, Verb(Binary));
             }),
 
@@ -590,25 +590,35 @@ mod tests {
     }
 
     #[test]
-    fn test_implicit_composition() {
+    fn test_unary_composition() {
         k9::snapshot!(tester("neg sign"), "v1:(<comp> neg sign)");
-        k9::snapshot!(tester("neg sign neg"), "v1:(<comp> (<comp> neg sign) neg)");
+        k9::snapshot!(tester("neg sign neg"), "v1:(<comp> neg (<comp> sign neg))");
+
+        k9::snapshot!(tester("fold + fold *"), "v1:(<comp> (fold +) (fold *))");
+        k9::snapshot!(
+            tester("fold + fold * fold +"),
+            "v1:(<comp> (fold +) (<comp> (fold *) (fold +)))"
+        );
+    }
+
+    #[test]
+    fn test_implicit_composition() {
         k9::snapshot!(
             tester("neg + sign"),
             "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
         );
         k9::snapshot!(
             tester("neg sign + neg"),
-            "v2:(<comp-rhs> (<comp-lhs> + (<comp> neg sign)) neg)"
+            "v2:(<comp-lhs> (<comp-lhs> (<comp-rhs> + neg) sign) neg)"
         );
         k9::snapshot!(
             tester("neg + sign neg"),
-            "v2:(<comp-rhs> (<comp-rhs> (<comp-lhs> + neg) sign) neg)"
+            "v2:(<comp-lhs> (<comp-rhs> + (<comp> sign neg)) neg)"
         );
 
         k9::snapshot!(
             tester("neg + (sign neg)"),
-            "v2:(<comp-rhs> (<comp-lhs> + neg) (<comp> sign neg))"
+            "v2:(<comp-lhs> (<comp-rhs> + (<comp> sign neg)) neg)"
         );
 
         k9::snapshot!(tester("+ neg"), "v2:(<comp-rhs> + neg)");
@@ -633,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_confusing_expressions() {
-        k9::snapshot!(tester("* 1 +"), "v2:(<comp-lhs> + (<rhs> * 1))");
+        k9::snapshot!(tester("* 1 +"), "v2:(<comp-rhs> * (<lhs> + 1))");
         k9::snapshot!(tester("* + 1"), "v2:(<comp-rhs> * (<rhs> + 1))");
         k9::snapshot!(tester("1 * +"), "v2:(<comp-lhs> + (<lhs> * 1))");
     }
@@ -651,6 +661,12 @@ mod tests {
 
         k9::snapshot!(tester("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
         k9::snapshot!(tester("neg (+ 1)"), "v1:(<comp> neg (<rhs> + 1))");
+
+        k9::snapshot!(tester("+ sign neg"), "v2:(<comp-rhs> + (<comp> sign neg))");
+        k9::snapshot!(
+            tester("+ (sign neg)"),
+            "v2:(<comp-rhs> + (<comp> sign neg))"
+        );
     }
 
     #[test]
