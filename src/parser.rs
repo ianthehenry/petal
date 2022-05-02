@@ -407,7 +407,7 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 bin_impl_rl!(stack, Builtin::PartialApplicationLeft, Verb(Unary));
             }),
 
-            stack![s, v2, v1] => lookahead!(stack, {
+            stack![sv, v2, v1] => lookahead!(stack, {
                 bin_impl_lr!(stack, Builtin::ComposeRight, Verb(Binary));
             }),
 
@@ -595,7 +595,7 @@ mod tests {
         k9::snapshot!(tester("neg sign neg"), "v1:(<comp> (<comp> neg sign) neg)");
         k9::snapshot!(
             tester("neg + sign"),
-            "v2:(<comp-rhs> (<comp-lhs> + neg) sign)"
+            "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
         );
         k9::snapshot!(
             tester("neg sign + neg"),
@@ -636,6 +636,21 @@ mod tests {
         k9::snapshot!(tester("* 1 +"), "v2:(<comp-lhs> + (<rhs> * 1))");
         k9::snapshot!(tester("* + 1"), "v2:(<comp-rhs> * (<rhs> + 1))");
         k9::snapshot!(tester("1 * +"), "v2:(<comp-lhs> + (<lhs> * 1))");
+    }
+
+    #[test]
+    fn test_implicit_equivalences() {
+        k9::snapshot!(
+            tester("neg + sign"),
+            "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
+        );
+        k9::snapshot!(
+            tester("neg (+ sign)"),
+            "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
+        );
+
+        k9::snapshot!(tester("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
+        k9::snapshot!(tester("neg (+ 1)"), "v1:(<comp> neg (<rhs> + 1))");
     }
 
     #[test]
