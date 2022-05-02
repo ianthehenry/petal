@@ -218,207 +218,273 @@ fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
     }
 }
 
+enum ArityPattern {
+    Unary,
+    Binary,
+    Either,
+}
+
+impl ArityPattern {
+    fn matches(&self, target: &Arity) -> bool {
+        match (self, target) {
+            (ArityPattern::Unary, Arity::Unary) => true,
+            (ArityPattern::Binary, Arity::Binary) => true,
+            (ArityPattern::Either, _) => true,
+            _ => false,
+        }
+    }
+}
+
+enum Pattern<'a> {
+    Sentinel,
+    Noun,
+    Verb(ArityPattern),
+    Adverb(ArityPattern),
+    AnyOf(&'a [&'a Pattern<'a>]),
+    Any,
+}
+
+impl<'a> Pattern<'a> {
+    fn matches(&'a self, pos: &Option<(Term, PartOfSpeech)>) -> bool {
+        match (self, pos) {
+            (Pattern::Sentinel, None) => true,
+            (Pattern::Noun, Some((_, PartOfSpeech::Noun))) => true,
+            (Pattern::Verb(arity_pattern), Some((_, PartOfSpeech::Verb(arity)))) => {
+                arity_pattern.matches(arity)
+            }
+            (Pattern::Adverb(arity_pattern), Some((_, PartOfSpeech::Adverb(arity, _)))) => {
+                arity_pattern.matches(arity)
+            }
+            (Pattern::Any, _) => true,
+            (Pattern::AnyOf(patterns), pos) => {
+                for pattern in patterns.iter() {
+                    if pattern.matches(pos) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+fn matches_top(
+    stack: &Vec<Option<(Term, PartOfSpeech)>>,
+    pattern: &'static [&'static Pattern],
+) -> bool {
+    stack
+        .iter()
+        .rev()
+        .zip(pattern.iter())
+        .all(|(element, pattern)| pattern.matches(element))
+}
+
+fn pop_term(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> Term {
+    let (term, _) = stack.pop().unwrap().unwrap();
+    term
+}
+
+fn pop_adverb(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> (Term, Arity) {
+    let (term, pos) = stack.pop().unwrap().unwrap();
+    match pos {
+        PartOfSpeech::Adverb(_, result_arity) => (term, result_arity),
+        _ => panic!("not an adverb!"),
+    }
+}
+
 fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
     use Arity::*;
     use PartOfSpeech::*;
     use Term::*;
     let mut end_reached = false;
     let mut stack: Vec<Option<(Term, PartOfSpeech)>> = vec![None, None, None, None];
+
+    static ANY: Pattern = Pattern::Any;
+    static S: Pattern = Pattern::Sentinel;
+    static N: Pattern = Pattern::Noun;
+    static V: Pattern = Pattern::Verb(ArityPattern::Either);
+    static V1: Pattern = Pattern::Verb(ArityPattern::Unary);
+    static V2: Pattern = Pattern::Verb(ArityPattern::Binary);
+    static VN: Pattern = Pattern::AnyOf(&[&V, &N]);
+    static SV: Pattern = Pattern::AnyOf(&[&S, &V]);
+    static SVN: Pattern = Pattern::AnyOf(&[&S, &V, &N]);
+    static A: Pattern = Pattern::Adverb(ArityPattern::Unary);
+    static C: Pattern = Pattern::Adverb(ArityPattern::Binary);
+
     loop {
-        // These patterns are sort of written backwards from how I want to think
-        // of them. We're walking right-to-left through the input tokens:
-        //
-        //    1 twice + 2
-        //
-        // So the stack will contain a reverse prefix from the right:
-        //
-        // 2
-        // 2 +
-        // 2 + twice
-        // 2 (+ twice)
-        // 2 (+ twice) 1
-        //
-        // It might be worth, you know, fixing this at some point.
-        match &stack[stack.len() - 4..] {
-            [.., Some((verb, Verb(_))), Some((adverb, Adverb(Unary, result_arity)))] => {
-                let result_arity = *result_arity;
-                // TODO: we can pretty easily avoid cloning the terms. slash,
-                // like, this entire situation can be greatly simplified by a
-                // typed stack helper thing
-                let adverb = adverb.clone();
-                let verb = verb.clone();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    UnaryApplication(Box::new(adverb), Box::new(verb)),
-                    Verb(result_arity),
-                )));
-            }
-            [.., Some((noun, Noun)), Some((verb, Verb(Unary))), None | Some((_, Verb(_) | Noun))] =>
-            {
-                let noun = noun.clone();
-                let verb = verb.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    UnaryApplication(Box::new(verb), Box::new(noun)),
-                    Noun,
-                )));
-                stack.push(stash);
-            }
-            [.., Some((rhs, Noun | Verb(_))), Some((verb, Adverb(Binary, result_arity))), Some((lhs, Noun | Verb(_))), _] =>
-            {
-                let lhs = lhs.clone();
-                let verb = verb.clone();
-                let result_arity = *result_arity;
-                let rhs = rhs.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
-                    Verb(result_arity),
-                )));
-                stack.push(stash);
-            }
+        static ADV: &[&Pattern; 2] = &[&A, &V];
+        if matches_top(&stack, ADV) {
+            let (adverb, result_arity) = pop_adverb(&mut stack);
+            let verb = pop_term(&mut stack);
+            stack.push(Some((
+                UnaryApplication(Box::new(adverb), Box::new(verb)),
+                Verb(result_arity),
+            )));
+            continue;
+        }
 
-            [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), Some((lhs, Noun)), None | Some((_, Verb(_)))] =>
-            {
-                let lhs = lhs.clone();
-                let verb = verb.clone();
-                let rhs = rhs.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
-                    Noun,
-                )));
-                stack.push(stash);
-            }
+        static FUNC: &[&Pattern; 3] = &[&SVN, &V1, &N];
+        if matches_top(&stack, FUNC) {
+            let stash = stack.pop().unwrap();
+            let verb = pop_term(&mut stack);
+            let noun = pop_term(&mut stack);
+            stack.push(Some((
+                UnaryApplication(Box::new(verb), Box::new(noun)),
+                Noun,
+            )));
+            stack.push(stash);
+            continue;
+        }
 
-            [.., Some((snd, Noun)), Some((fst, Noun)), None | Some((_, Verb(_) | Noun))] => {
-                let first = fst.clone();
-                let second = snd.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
+        static CONJ: &[&Pattern; 4] = &[&ANY, &VN, &C, &VN];
+        if matches_top(&stack, CONJ) {
+            let stash = stack.pop().unwrap();
+            let lhs = pop_term(&mut stack);
+            let (conjunction, result_arity) = pop_adverb(&mut stack);
+            let rhs = pop_term(&mut stack);
+            stack.push(Some((
+                BinaryApplication(Box::new(conjunction), Box::new(lhs), Box::new(rhs)),
+                Verb(result_arity),
+            )));
+            stack.push(stash);
+            continue;
+        }
 
-                let result = match second {
-                    Tuple(mut terms) => {
-                        terms.push(first);
-                        Tuple(terms)
-                    }
-                    _ => Tuple(vec![second, first]),
-                };
+        static BINOP: &[&Pattern; 4] = &[&SV, &N, &V2, &N];
+        if matches_top(&stack, BINOP) {
+            let stash = stack.pop().unwrap();
+            let lhs = pop_term(&mut stack);
+            let verb = pop_term(&mut stack);
+            let rhs = pop_term(&mut stack);
+            stack.push(Some((
+                BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
+                Noun,
+            )));
+            stack.push(stash);
+            continue;
+        }
 
-                stack.push(Some((result, Noun)));
-                stack.push(stash);
-            }
+        static TUPLE: &[&Pattern; 3] = &[&SVN, &N, &N];
+        if matches_top(&stack, TUPLE) {
+            let stash = stack.pop().unwrap();
+            let first = pop_term(&mut stack);
+            let second = pop_term(&mut stack);
 
-            [.., Some((g, Verb(Unary))), Some((f, Verb(Unary))), None] => {
-                let f = f.clone();
-                let g = g.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::Compose)),
-                        Box::new(f),
-                        Box::new(g),
-                    ),
-                    Verb(Unary),
-                )));
-                stack.push(stash);
-            }
-
-            [.., Some((rhs, Noun)), Some((verb, Verb(Binary))), None] => {
-                let verb = verb.clone();
-                let rhs = rhs.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::PartialApplicationRight)),
-                        Box::new(verb),
-                        Box::new(rhs),
-                    ),
-                    Verb(Unary),
-                )));
-                stack.push(stash);
-            }
-
-            [.., Some((verb, Verb(Binary))), Some((lhs, Noun)), None] => {
-                let verb = verb.clone();
-                let lhs = lhs.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::PartialApplicationLeft)),
-                        Box::new(verb),
-                        Box::new(lhs),
-                    ),
-                    Verb(Unary),
-                )));
-                stack.push(stash);
-            }
-
-            [.., Some((rhs, Verb(Unary))), Some((verb, Verb(Binary))), None] => {
-                let verb = verb.clone();
-                let rhs = rhs.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::ComposeRight)),
-                        Box::new(verb),
-                        Box::new(rhs),
-                    ),
-                    Verb(Binary),
-                )));
-                stack.push(stash);
-            }
-
-            [.., Some((verb, Verb(Binary))), Some((lhs, Verb(Unary))), None] => {
-                let verb = verb.clone();
-                let lhs = lhs.clone();
-                let stash = stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.pop().unwrap();
-                stack.push(Some((
-                    BinaryApplication(
-                        Box::new(Implicit(Builtin::ComposeLeft)),
-                        Box::new(verb),
-                        Box::new(lhs),
-                    ),
-                    Verb(Binary),
-                )));
-                stack.push(stash);
-            }
-
-            _ => match input.pop() {
-                None => {
-                    if end_reached {
-                        break;
-                    } else {
-                        end_reached = true;
-                        stack.push(None);
-                    }
+            let result = match second {
+                Tuple(mut terms) => {
+                    terms.push(first);
+                    Tuple(terms)
                 }
-                Some(word) => {
-                    stack.push(Some(parse_word(word)?));
+                _ => Tuple(vec![second, first]),
+            };
+
+            stack.push(Some((result, Noun)));
+            stack.push(stash);
+            continue;
+        }
+
+        static COMP: &[&Pattern; 3] = &[&S, &V1, &V1];
+        if matches_top(&stack, COMP) {
+            let stash = stack.pop().unwrap();
+            let f = pop_term(&mut stack);
+            let g = pop_term(&mut stack);
+
+            stack.push(Some((
+                BinaryApplication(
+                    Box::new(Implicit(Builtin::Compose)),
+                    Box::new(f),
+                    Box::new(g),
+                ),
+                Verb(Unary),
+            )));
+            stack.push(stash);
+            continue;
+        }
+
+        static PART_R: &[&Pattern; 3] = &[&S, &V2, &N];
+        if matches_top(&stack, PART_R) {
+            let stash = stack.pop().unwrap();
+            let verb = pop_term(&mut stack);
+            let rhs = pop_term(&mut stack);
+            stack.push(Some((
+                BinaryApplication(
+                    Box::new(Implicit(Builtin::PartialApplicationRight)),
+                    Box::new(verb),
+                    Box::new(rhs),
+                ),
+                Verb(Unary),
+            )));
+            stack.push(stash);
+            continue;
+        }
+
+        static PART_L: &[&Pattern; 3] = &[&S, &N, &V2];
+        if matches_top(&stack, PART_L) {
+            let stash = stack.pop().unwrap();
+            let lhs = pop_term(&mut stack);
+            let verb = pop_term(&mut stack);
+            stack.push(Some((
+                BinaryApplication(
+                    Box::new(Implicit(Builtin::PartialApplicationLeft)),
+                    Box::new(verb),
+                    Box::new(lhs),
+                ),
+                Verb(Unary),
+            )));
+            stack.push(stash);
+            continue;
+        }
+
+        static COMP_R: &[&Pattern; 3] = &[&S, &V2, &V1];
+        if matches_top(&stack, COMP_R) {
+            let stash = stack.pop().unwrap();
+            let verb = pop_term(&mut stack);
+            let f = pop_term(&mut stack);
+            stack.push(Some((
+                BinaryApplication(
+                    Box::new(Implicit(Builtin::ComposeRight)),
+                    Box::new(verb),
+                    Box::new(f),
+                ),
+                Verb(Binary),
+            )));
+            stack.push(stash);
+            continue;
+        }
+
+        static COMP_L: &[&Pattern; 3] = &[&S, &V1, &V2];
+        if matches_top(&stack, COMP_L) {
+            let stash = stack.pop().unwrap();
+            let f = pop_term(&mut stack);
+            let verb = pop_term(&mut stack);
+            stack.push(Some((
+                BinaryApplication(
+                    Box::new(Implicit(Builtin::ComposeLeft)),
+                    Box::new(verb),
+                    Box::new(f),
+                ),
+                Verb(Binary),
+            )));
+            stack.push(stash);
+            continue;
+        }
+
+        match input.pop() {
+            None => {
+                if end_reached {
+                    break;
+                } else {
+                    end_reached = true;
+                    stack.push(None);
                 }
-            },
+            }
+            Some(word) => {
+                stack.push(Some(parse_word(word)?));
+            }
         };
     }
+
     let without_sentinels = stack.into_iter().flatten().collect::<Vec<_>>();
     match without_sentinels.len() {
         0 => panic!("empty parse"),
@@ -441,6 +507,7 @@ mod tests {
         let (term, pos) = annotated_term;
         format!("{}:{}", pos, term)
     }
+
     fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
         terms
             .iter()
