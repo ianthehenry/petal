@@ -42,6 +42,7 @@ pub enum PartOfSpeech {
     Verb(Arity),
     Adverb(Arity, Arity), // input arity, output arity
 }
+use PartOfSpeech::*;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Term {
@@ -119,7 +120,6 @@ impl fmt::Display for Term {
 
 impl fmt::Display for PartOfSpeech {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use PartOfSpeech::*;
         match self {
             Noun => write!(f, "n"),
             Verb(Arity::Unary) => write!(f, "v1"),
@@ -175,46 +175,47 @@ fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
     words
 }
 
-fn parse_word(word: Word) -> Result<(Term, PartOfSpeech), ParseError> {
-    use PartOfSpeech::*;
+struct ParseFrame {
+    stack: Vec<Option<(Term, PartOfSpeech)>>,
+    input: Vec<Word>,
+    end_reached: bool,
+    finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>,
+}
 
-    match word {
-        Word::Int64(num) => Ok((Term::Atom(Atom::Int64(num)), Noun)),
-        Word::Identifier(id) => {
-            let pos = match id.as_str() {
-                "+" | "*" => Verb(Arity::Binary),
-                "neg" | "sign" => Verb(Arity::Unary),
-                "." => Adverb(Arity::Binary, Arity::Binary),
-                "fold" => Adverb(Arity::Unary, Arity::Unary),
-                "flip" => Adverb(Arity::Unary, Arity::Binary),
-                _ => Noun,
+impl ParseFrame {
+    fn new(input: Vec<Word>, finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>) -> Self {
+        Self {
+            input,
+            end_reached: false,
+            stack: vec![None, None, None, None],
+            finish,
+        }
+    }
+}
+
+enum ParseResult {
+    Complete(Term, PartOfSpeech),
+    Partial(String, Vec<ParseFrame>),
+}
+
+fn identity(term: Term, _: PartOfSpeech) -> Result<Term, ParseError> {
+    Ok(term)
+}
+
+fn wrap_parens(term: Term, _: PartOfSpeech) -> Result<Term, ParseError> {
+    Ok(Term::Parens(Box::new(term)))
+}
+
+fn wrap_brackets(term: Term, pos: PartOfSpeech) -> Result<Term, ParseError> {
+    match pos {
+        Noun => {
+            let terms = match term {
+                Term::Tuple(terms) => terms,
+                term => vec![term],
             };
-            Ok((Term::Atom(Atom::Identifier(id)), pos))
+            Ok(Term::Brackets(terms))
         }
-        Word::Parens(mut words) => {
-            if words.is_empty() {
-                Ok((Term::Parens(Box::new(Term::Tuple(vec![]))), Noun))
-            } else {
-                let (term, pos) = parse_words(&mut words)?;
-                Ok((Term::Parens(Box::new(term)), pos))
-            }
-        }
-        Word::Brackets(mut words) => {
-            if words.is_empty() {
-                Ok((Term::Brackets(vec![]), Noun))
-            } else {
-                let (term, pos) = parse_words(&mut words)?;
-                if pos != Noun {
-                    Err(ParseError::ArrayLiteralNotNoun)
-                } else {
-                    let terms = match term {
-                        Term::Tuple(terms) => terms,
-                        term => vec![term],
-                    };
-                    Ok((Term::Brackets(terms), pos))
-                }
-            }
-        }
+        _ => Err(ParseError::ArrayLiteralNotNoun),
     }
 }
 
@@ -226,7 +227,7 @@ fn pop_term(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> Term {
 fn pop_adverb(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> (Term, Arity) {
     let (term, pos) = stack.pop().unwrap().unwrap();
     match pos {
-        PartOfSpeech::Adverb(_, result_arity) => (term, result_arity),
+        Adverb(_, result_arity) => (term, result_arity),
         _ => panic!("not an adverb!"),
     }
 }
@@ -241,8 +242,8 @@ macro_rules! lookahead {
 
 macro_rules! bin_impl_lr {
     ($stack:ident, $inner:path, $pos:expr) => {
-        let lhs = pop_term(&mut $stack);
-        let rhs = pop_term(&mut $stack);
+        let lhs = pop_term($stack);
+        let rhs = pop_term($stack);
         $stack.push(Some((
             BinaryApplication(
                 Box::new(Term::Implicit($inner)),
@@ -256,8 +257,8 @@ macro_rules! bin_impl_lr {
 
 macro_rules! bin_impl_rl {
     ($stack:ident, $inner:expr, $pos:expr) => {
-        let rhs = pop_term(&mut $stack);
-        let lhs = pop_term(&mut $stack);
+        let rhs = pop_term($stack);
+        let lhs = pop_term($stack);
         $stack.push(Some((
             BinaryApplication(
                 Box::new(Term::Implicit($inner)),
@@ -333,18 +334,15 @@ macro_rules! stack {
     };
 }
 
-fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
+fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
     use Arity::*;
-    use PartOfSpeech::*;
     use Term::*;
-    let mut end_reached = false;
-    let mut stack: Vec<Option<(Term, PartOfSpeech)>> = vec![None, None, None, None];
 
     loop {
         match &stack[stack.len() - 4..] {
             stack![a1, v] => {
-                let (adverb, result_arity) = pop_adverb(&mut stack);
-                let verb = pop_term(&mut stack);
+                let (adverb, result_arity) = pop_adverb(stack);
+                let verb = pop_term(stack);
                 stack.push(Some((
                     UnaryApplication(Box::new(adverb), Box::new(verb)),
                     Verb(result_arity),
@@ -352,8 +350,8 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
             }
 
             stack![svn, v1, n] => lookahead!(stack, {
-                let verb = pop_term(&mut stack);
-                let noun = pop_term(&mut stack);
+                let verb = pop_term(stack);
+                let noun = pop_term(stack);
                 stack.push(Some((
                     UnaryApplication(Box::new(verb), Box::new(noun)),
                     Noun,
@@ -361,9 +359,9 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
             }),
 
             stack![_, vn, a2, vn] => lookahead!(stack, {
-                let lhs = pop_term(&mut stack);
-                let (conjunction, result_arity) = pop_adverb(&mut stack);
-                let rhs = pop_term(&mut stack);
+                let lhs = pop_term(stack);
+                let (conjunction, result_arity) = pop_adverb(stack);
+                let rhs = pop_term(stack);
                 stack.push(Some((
                     BinaryApplication(Box::new(conjunction), Box::new(lhs), Box::new(rhs)),
                     Verb(result_arity),
@@ -371,9 +369,9 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
             }),
 
             stack![sv, n, v2, n] => lookahead!(stack, {
-                let lhs = pop_term(&mut stack);
-                let verb = pop_term(&mut stack);
-                let rhs = pop_term(&mut stack);
+                let lhs = pop_term(stack);
+                let verb = pop_term(stack);
+                let rhs = pop_term(stack);
                 stack.push(Some((
                     BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
                     Noun,
@@ -381,8 +379,8 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
             }),
 
             stack![svn, n, n] => lookahead!(stack, {
-                let first = pop_term(&mut stack);
-                let second = pop_term(&mut stack);
+                let first = pop_term(stack);
+                let second = pop_term(stack);
 
                 let result = match second {
                     Tuple(mut terms) => {
@@ -415,35 +413,47 @@ fn parse_words(input: &mut Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError
                 bin_impl_rl!(stack, Builtin::ComposeLeft, Verb(Binary));
             }),
 
-            _ => {
-                match input.pop() {
-                    None => {
-                        if end_reached {
-                            break;
-                        } else {
-                            end_reached = true;
-                            stack.push(None);
-                        }
-                    }
-                    Some(word) => {
-                        stack.push(Some(parse_word(word)?));
-                    }
-                };
-            }
+            _ => break,
         }
-    }
-
-    let without_sentinels = stack.into_iter().flatten().collect::<Vec<_>>();
-    match without_sentinels.len() {
-        0 => panic!("empty parse"),
-        1 => Ok(without_sentinels.into_iter().next().unwrap()),
-        _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
     }
 }
 
-pub fn parse_tokens(tokens: Vec<Token>) -> Result<(Term, PartOfSpeech), ParseError> {
-    let mut words = resolve_semicolons(tokens, Delimiter::Parens);
-    parse_words(&mut words)
+fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
+    loop {
+        let state = call_stack.last_mut().unwrap();
+
+        reduce_stack(&mut state.stack);
+
+        match state.input.pop() {
+            None => {
+                if state.end_reached {
+                    let state = call_stack.pop().unwrap();
+                    let without_sentinels = state.stack.into_iter().flatten().collect::<Vec<_>>();
+                    let (term, pos) = match without_sentinels.len() {
+                        0 => Ok((Term::Tuple(vec![]), Noun)),
+                        1 => Ok(without_sentinels.into_iter().next().unwrap()),
+                        _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
+                    }?;
+                    let term = (state.finish)(term, pos)?;
+
+                    match call_stack.last_mut() {
+                        None => return Ok(ParseResult::Complete(term, pos)),
+                        Some(next) => next.stack.push(Some((term, pos))),
+                    }
+                } else {
+                    state.end_reached = true;
+                    state.stack.push(None);
+                }
+            }
+
+            Some(word) => match word {
+                Word::Int64(num) => state.stack.push(Some((Term::Atom(Atom::Int64(num)), Noun))),
+                Word::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
+                Word::Parens(words) => call_stack.push(ParseFrame::new(words, wrap_parens)),
+                Word::Brackets(words) => call_stack.push(ParseFrame::new(words, wrap_brackets)),
+            },
+        };
+    }
 }
 
 #[cfg(test)]
@@ -523,13 +533,41 @@ mod tests {
         );
     }
 
+    fn parse_to_completion(input: Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
+        use ParseResult::*;
+
+        let state = ParseFrame::new(input, identity);
+        let mut call_stack = vec![state];
+
+        loop {
+            match parse(call_stack)? {
+                Complete(term, pos) => return Ok((term, pos)),
+                Partial(id, stack) => {
+                    call_stack = stack;
+                    let pos = match id.as_str() {
+                        "+" | "*" => Verb(Arity::Binary),
+                        "neg" | "sign" => Verb(Arity::Unary),
+                        "." => Adverb(Arity::Binary, Arity::Binary),
+                        "fold" => Adverb(Arity::Unary, Arity::Unary),
+                        "flip" => Adverb(Arity::Unary, Arity::Binary),
+                        "x" | "y" => Noun,
+                        _ => panic!("unknown identifier"),
+                    };
+                    let term = Term::Atom(Atom::Identifier(id));
+                    let top_state = call_stack.last_mut().unwrap();
+                    top_state.stack.push(Some((term, pos)));
+                }
+            }
+        }
+    }
+
     fn tester(input: &str) -> String {
-        let (remaining, parsed) = tokenizer::tokens(input).unwrap();
+        let (remaining, tokens) = tokenizer::tokens(input).unwrap();
         if !remaining.is_empty() {
             panic!("not a total parse!");
         }
-        let mut words = resolve_semicolons(parsed, Delimiter::Parens);
-        match parse_words(&mut words) {
+        let words = resolve_semicolons(tokens, Delimiter::Parens);
+        match parse_to_completion(words) {
             Ok(term) => show_annotated_term(&term),
             Err(ParseError::DidNotFullyReduce(terms)) => {
                 format!("incomplete parse: {}", show_annotated_terms(terms))
