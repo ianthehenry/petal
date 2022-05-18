@@ -94,8 +94,16 @@ fn compound_token(i: &str) -> IResult<&str, Vec<Token>> {
     )(i)
 }
 
-pub fn tokens(i: &str) -> IResult<&str, Vec<Token>> {
+fn tokens(i: &str) -> IResult<&str, Vec<Token>> {
     map(separated_list0(multispace1, compound_token), flatten_tokens)(i)
+}
+
+pub fn tokenize(i: &str) -> Vec<Token> {
+    let (remaining, tokens) = tokens(i).unwrap();
+    if !remaining.is_empty() {
+        panic!("tokenize error");
+    }
+    tokens
 }
 
 #[cfg(test)]

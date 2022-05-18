@@ -20,20 +20,17 @@ fn main() {
     match Command::from_args() {
         Command::Run { filenames, inline } => {
             println!("{:?} {}", filenames, inline);
-            for filename in filenames {
-                let contents = fs::read_to_string(filename).expect("unable to read file");
-                let (remaining, tokens) = tokenizer::tokens(&contents).unwrap();
-                if !remaining.is_empty() {
-                    panic!("not a total parse!");
-                }
-                match parser::parse_tokens(tokens) {
-                    Ok(annotated_term) => println!("{:?}", annotated_term),
-                    Err(parser::ParseError::DidNotFullyReduce(terms)) => {
-                        panic!("incomplete parse: {:?}", terms)
-                    }
-                    Err(error) => panic!("error: {:?}", error),
-                }
-            }
+            // for filename in filenames {
+            //     let contents = fs::read_to_string(filename).expect("unable to read file");
+            //     let tokens = tokenizer::tokenize(&contents);
+            //     match parser::parse_tokens(tokens) {
+            //         Ok(annotated_term) => println!("{:?}", annotated_term),
+            //         Err(parser::ParseError::DidNotFullyReduce(terms)) => {
+            //             panic!("incomplete parse: {:?}", terms)
+            //         }
+            //         Err(error) => panic!("error: {:?}", error),
+            //     }
+            // }
         }
         Command::Eval { expression } => println!("{}", expression),
     }

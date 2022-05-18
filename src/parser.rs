@@ -139,6 +139,8 @@ impl Delimiter {
     }
 }
 
+// TODO: is there a good reason to do this ahead of time in a separate pass? why
+// not just do it in the middle of parsing?
 fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
     let mut index_levels: Vec<usize> = vec![];
     let mut words: Vec<Word> = vec![];
@@ -175,6 +177,7 @@ fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
     words
 }
 
+#[derive(Debug)]
 struct ParseFrame {
     stack: Vec<Option<(Term, PartOfSpeech)>>,
     input: Vec<Word>,
@@ -420,40 +423,45 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
 
 fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
     loop {
-        let state = call_stack.last_mut().unwrap();
+        let frame = call_stack.last_mut().unwrap();
 
-        reduce_stack(&mut state.stack);
+        reduce_stack(&mut frame.stack);
 
-        match state.input.pop() {
+        match frame.input.pop() {
             None => {
-                if state.end_reached {
-                    let state = call_stack.pop().unwrap();
-                    let without_sentinels = state.stack.into_iter().flatten().collect::<Vec<_>>();
+                if frame.end_reached {
+                    let frame = call_stack.pop().unwrap();
+                    let without_sentinels = frame.stack.into_iter().flatten().collect::<Vec<_>>();
                     let (term, pos) = match without_sentinels.len() {
                         0 => Ok((Term::Tuple(vec![]), Noun)),
                         1 => Ok(without_sentinels.into_iter().next().unwrap()),
                         _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
                     }?;
-                    let term = (state.finish)(term, pos)?;
+                    let term = (frame.finish)(term, pos)?;
 
                     match call_stack.last_mut() {
                         None => return Ok(ParseResult::Complete(term, pos)),
                         Some(next) => next.stack.push(Some((term, pos))),
                     }
                 } else {
-                    state.end_reached = true;
-                    state.stack.push(None);
+                    frame.end_reached = true;
+                    frame.stack.push(None);
                 }
             }
 
             Some(word) => match word {
-                Word::Int64(num) => state.stack.push(Some((Term::Atom(Atom::Int64(num)), Noun))),
+                Word::Int64(num) => frame.stack.push(Some((Term::Atom(Atom::Int64(num)), Noun))),
                 Word::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
                 Word::Parens(words) => call_stack.push(ParseFrame::new(words, wrap_parens)),
                 Word::Brackets(words) => call_stack.push(ParseFrame::new(words, wrap_brackets)),
             },
         };
     }
+}
+
+fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
+    let top_frame = call_stack.last_mut().unwrap();
+    top_frame.stack.push(Some((term, pos)));
 }
 
 #[cfg(test)]
@@ -495,10 +503,7 @@ mod tests {
     }
 
     fn test(input: &str) -> String {
-        let (remaining, tokens) = tokenizer::tokens(input).unwrap();
-        if !remaining.is_empty() {
-            panic!("unable to tokenize");
-        }
+        let tokens = tokenizer::tokenize(input);
         delimited("", &resolve_semicolons(tokens, Delimiter::Parens), "")
     }
 
@@ -536,8 +541,8 @@ mod tests {
     fn parse_to_completion(input: Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
         use ParseResult::*;
 
-        let state = ParseFrame::new(input, identity);
-        let mut call_stack = vec![state];
+        let frame = ParseFrame::new(input, identity);
+        let mut call_stack = vec![frame];
 
         loop {
             match parse(call_stack)? {
@@ -553,19 +558,14 @@ mod tests {
                         "x" | "y" => Noun,
                         _ => panic!("unknown identifier"),
                     };
-                    let term = Term::Atom(Atom::Identifier(id));
-                    let top_state = call_stack.last_mut().unwrap();
-                    top_state.stack.push(Some((term, pos)));
+                    provide(&mut call_stack, Term::Atom(Atom::Identifier(id)), pos);
                 }
             }
         }
     }
 
     fn tester(input: &str) -> String {
-        let (remaining, tokens) = tokenizer::tokens(input).unwrap();
-        if !remaining.is_empty() {
-            panic!("not a total parse!");
-        }
+        let tokens = tokenizer::tokenize(input);
         let words = resolve_semicolons(tokens, Delimiter::Parens);
         match parse_to_completion(words) {
             Ok(term) => show_annotated_term(&term),
@@ -573,6 +573,25 @@ mod tests {
                 format!("incomplete parse: {}", show_annotated_terms(terms))
             }
             Err(error) => format!("error: {:?}", error),
+        }
+    }
+
+    fn begin_parse(input: &str) -> Vec<ParseFrame> {
+        let tokens = tokenizer::tokenize(input);
+        let words = resolve_semicolons(tokens, Delimiter::Parens);
+        let frame = ParseFrame::new(words, identity);
+        vec![frame]
+    }
+
+    fn advance(call_stack: Vec<ParseFrame>) -> (String, Option<Vec<ParseFrame>>) {
+        match parse(call_stack) {
+            Ok(ParseResult::Complete(term, pos)) => (show_annotated_term(&(term, pos)), None),
+            Ok(ParseResult::Partial(id, stack)) => (format!("awaiting {}", id), Some(stack)),
+            Err(ParseError::DidNotFullyReduce(terms)) => (
+                format!("incomplete parse: {}", show_annotated_terms(terms)),
+                None,
+            ),
+            Err(error) => (format!("error: {:?}", error), None),
         }
     }
 
@@ -718,5 +737,26 @@ mod tests {
         k9::snapshot!(tester(". flip"), "incomplete parse: a1:flip a2:.");
         k9::snapshot!(tester(". fold"), "incomplete parse: a1:fold a2:.");
         k9::snapshot!(tester("flip fold"), "incomplete parse: a1:fold a1:flip");
+    }
+
+    fn id(name: &str) -> Term {
+        Term::Atom(Atom::Identifier(name.to_string()))
+    }
+
+    #[test]
+    fn test_partial_parsing() {
+        let call_stack = begin_parse("x + foo");
+        let (result, mut call_stack) = advance(call_stack);
+        k9::snapshot!(result, "awaiting foo");
+        provide(call_stack.as_mut().unwrap(), id("foo"), Noun);
+        let (result, mut call_stack) = advance(call_stack.unwrap());
+        k9::snapshot!(result, "awaiting +");
+        provide(call_stack.as_mut().unwrap(), id("+"), Verb(Arity::Binary));
+        let (result, mut call_stack) = advance(call_stack.unwrap());
+        k9::snapshot!(result, "awaiting x");
+        provide(call_stack.as_mut().unwrap(), id("x"), Noun);
+        let (result, call_stack) = advance(call_stack.unwrap());
+        k9::snapshot!(result, "n:(+ x foo)");
+        k9::snapshot!(call_stack, "None");
     }
 }
