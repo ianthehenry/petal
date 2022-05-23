@@ -618,16 +618,16 @@ impl Scope {
         self.unblocked.push(ParseOperation { id, call_stack });
     }
 
-    fn blocked_on_name(&mut self, missing_name: String, parse: ParseOperation) {
+    fn blocked_on_name(&mut self, prereq_name: String, parse: ParseOperation) {
         self.blocked_on_name
-            .entry(missing_name)
+            .entry(prereq_name)
             .or_insert_with(Vec::new)
             .push(parse);
     }
 
-    fn blocked_on_id(&mut self, missing_id: Identifier, parse: ParseOperation) {
+    fn blocked_on_id(&mut self, prereq_id: Identifier, parse: ParseOperation) {
         self.blocked_on_id
-            .entry(missing_id)
+            .entry(prereq_id)
             .or_insert_with(Vec::new)
             .push(parse);
     }
@@ -639,7 +639,7 @@ impl Scope {
             }
         }
 
-        self.failed.insert(id, error).unwrap();
+        assert!(self.failed.insert(id, error).is_none());
     }
 
     fn name_of_id(&self, id: &Identifier) -> String {
@@ -749,62 +749,47 @@ impl Scope {
     }
 }
 
-fn parse_body(assignments: Vec<Assignment>) -> Scope {
-    let mut top_level_scope = Scope::new(None);
-    top_level_scope.add_builtin("+", Verb(Arity::Binary));
-    top_level_scope.add_builtin("*", Verb(Arity::Binary));
-    top_level_scope.add_builtin(".", Adverb(Arity::Binary, Arity::Binary));
-    top_level_scope.add_builtin("fold", Adverb(Arity::Unary, Arity::Unary));
-    top_level_scope.add_builtin("flip", Adverb(Arity::Unary, Arity::Binary));
-    top_level_scope.add_builtin("x", Noun);
-    top_level_scope.add_builtin("y", Noun);
-
-    let top_level_scope = Rc::new(top_level_scope);
-
-    let mut current_scope = Scope::new(Some(Rc::clone(&top_level_scope)));
-
+fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
     let mut input_queue = assignments;
     // we have to process top-to-bottom
     input_queue.reverse();
 
     while let Some(assignment) = input_queue.pop() {
-        current_scope.begin(assignment);
-        while let Some(ParseOperation { id, mut call_stack }) = current_scope.unblocked.pop() {
+        scope.begin(assignment);
+        while let Some(ParseOperation { id, mut call_stack }) = scope.unblocked.pop() {
             loop {
                 match parse(call_stack) {
                     Err(e) => {
-                        current_scope.failed(id, e);
+                        scope.failed(id, e);
                         break;
                     }
                     Ok(ParseResult::Complete(term, pos)) => {
-                        current_scope.complete(id, term, pos);
+                        scope.complete(id, term, pos);
                         break;
                     }
-                    Ok(ParseResult::Partial(missing_name, stack)) => {
+                    Ok(ParseResult::Partial(prereq_name, stack)) => {
                         // TODO: should add support for "not yet parsed but part of
                         // speech already known"
-                        match current_scope.lookup(&missing_name, id) {
+                        match scope.lookup(&prereq_name, id) {
                             LookupResult::Unknown => {
-                                current_scope
-                                    .blocked_on_name(missing_name, ParseOperation::new(id, stack));
+                                scope.blocked_on_name(prereq_name, ParseOperation::new(id, stack));
                                 break;
                             }
-                            LookupResult::Pending(missing_id) => {
-                                current_scope
-                                    .blocked_on_id(missing_id, ParseOperation::new(id, stack));
+                            LookupResult::Pending(prereq_id) => {
+                                scope.blocked_on_id(prereq_id, ParseOperation::new(id, stack));
                                 break;
                             }
-                            LookupResult::Failed(id, _) => {
-                                current_scope.failed(id, ParseError::BadReference(id));
+                            LookupResult::Failed(prereq_id, _) => {
+                                scope.failed(id, ParseError::BadReference(prereq_id));
                                 break;
                             }
-                            LookupResult::Complete(missing_id, _term, pos) => {
+                            LookupResult::Complete(prereq_id, _term, pos) => {
                                 call_stack = stack;
                                 provide(
                                     &mut call_stack,
                                     Term::Atom(Atom::Identifier(RichIdentifier::new(
-                                        missing_id,
-                                        missing_name,
+                                        prereq_id,
+                                        prereq_name,
                                     ))),
                                     pos,
                                 );
@@ -816,7 +801,19 @@ fn parse_body(assignments: Vec<Assignment>) -> Scope {
         }
     }
 
-    current_scope
+    // If any assignment failed, the whole parse failed.
+    //
+    // Otherwise, if something is blocked on name, we need to return pending.
+    //
+    // Otherwise, if something is blocked on an ID defined in a parent scope,
+    // then we need to return pending.
+    //
+    // Otherwise, if something is blocked on an ID defined in *my* scope,
+    // there's a cyclic problem and we can error immediately.
+    //
+    // Otherwise, we successfully parsed every assignment.
+
+    scope
 }
 
 fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
@@ -1170,51 +1167,138 @@ mod tests {
         }
     }
 
-    fn test_body(assignments: Vec<Assignment>) -> String {
-        let scope = parse_body(assignments);
-        let mut result = "".to_string();
-        let mut first = true;
-        assert!(scope.failed.is_empty());
-        assert!(scope.blocked_on_id.is_empty());
-        assert!(scope.blocked_on_name.is_empty());
-        assert!(scope.unblocked.is_empty());
+    #[derive(Debug)]
+    enum AssignmentStatus<'a> {
+        Complete(&'a Term, &'a PartOfSpeech),
+        Failed(&'a ParseError),
+        Cyclic(&'a Identifier),
+        Pending(&'a str),
+    }
 
+    fn print_assignments(scope: &Scope) -> String {
         let mut disambiguator = Disambiguator::new();
 
-        let mut kvps = scope.complete.iter().collect::<Vec<_>>();
+        let completes = scope
+            .complete
+            .iter()
+            .map(|(id, (term, pos))| (*id, AssignmentStatus::Complete(term, pos)));
+        let failures = scope
+            .failed
+            .iter()
+            .map(|(id, error)| (*id, AssignmentStatus::Failed(error)));
+        let cyclics = scope.blocked_on_id.iter().flat_map(|(missing_id, parses)| {
+            parses
+                .iter()
+                .map(|parse| (parse.id, AssignmentStatus::Cyclic(missing_id)))
+        });
+        let pendings = scope
+            .blocked_on_name
+            .iter()
+            .flat_map(|(missing_name, parses)| {
+                parses
+                    .iter()
+                    .map(|parse| (parse.id, AssignmentStatus::Pending(missing_name)))
+            });
+
+        let mut kvps = completes
+            .chain(failures)
+            .chain(cyclics)
+            .chain(pendings)
+            .collect::<Vec<_>>();
         kvps.sort_by_key(|x| x.0);
+        let mut first = true;
+        let mut result = String::new();
 
-        for (id, (term, pos)) in kvps {
+        for (id, status) in kvps {
             let name = scope.name_of_id(&id);
-            let rich_id = RichIdentifier { id: *id, name };
+            let rich_id = RichIdentifier { id, name };
             disambiguator.see(rich_id.clone());
-
-            // TODO: do this with mutation?
-            let mut f = |atom: &Atom| match atom {
-                Atom::Identifier(rich_id) => {
-                    disambiguator.see(rich_id.clone());
-                    Atom::Identifier(RichIdentifier {
-                        id: rich_id.id,
-                        name: disambiguator.view(rich_id),
-                    })
-                }
-                _ => atom.clone(),
-            };
-            let term = rewrite_atoms(term, &mut f);
 
             if first {
                 first = false;
             } else {
                 result.push('\n');
             }
-            result.push_str(&format!(
-                "{} ({}) = {}",
-                disambiguator.view(&rich_id),
-                pos,
-                term
-            ));
+
+            match status {
+                AssignmentStatus::Complete(term, pos) => {
+                    // TODO: do this with mutation?
+                    let mut f = |atom: &Atom| match atom {
+                        Atom::Identifier(rich_id) => {
+                            disambiguator.see(rich_id.clone());
+                            Atom::Identifier(RichIdentifier {
+                                id: rich_id.id,
+                                name: disambiguator.view(rich_id),
+                            })
+                        }
+                        _ => atom.clone(),
+                    };
+                    let term = rewrite_atoms(&term, &mut f);
+
+                    result.push_str(&format!(
+                        "{} ({}) = {}",
+                        disambiguator.view(&rich_id),
+                        pos,
+                        term
+                    ));
+                }
+                AssignmentStatus::Failed(ParseError::BadReference(prereq_id)) => {
+                    let prereq_name = scope.name_of_id(prereq_id);
+                    let rich_prereq_id = RichIdentifier {
+                        id: *prereq_id,
+                        name: prereq_name,
+                    };
+                    result.push_str(&format!(
+                        "{} depends on failed {}",
+                        disambiguator.view(&rich_id),
+                        disambiguator.view(&rich_prereq_id)
+                    ));
+                }
+                AssignmentStatus::Failed(error) => {
+                    result.push_str(&format!(
+                        "{} failed: {:?}",
+                        disambiguator.view(&rich_id),
+                        error
+                    ));
+                }
+                AssignmentStatus::Cyclic(prereq_id) => {
+                    let prereq_name = scope.name_of_id(prereq_id);
+                    let rich_prereq_id = RichIdentifier {
+                        id: *prereq_id,
+                        name: prereq_name,
+                    };
+                    disambiguator.see(rich_prereq_id.clone());
+                    result.push_str(&format!(
+                        "{} depends on {}",
+                        disambiguator.view(&rich_id),
+                        disambiguator.view(&rich_prereq_id)
+                    ));
+                }
+                AssignmentStatus::Pending(prereq_name) => {
+                    result.push_str(&format!(
+                        "{} depends on unseen {}",
+                        disambiguator.view(&rich_id),
+                        prereq_name
+                    ));
+                }
+            }
         }
         result
+    }
+
+    fn test_body(assignments: Vec<Assignment>) -> String {
+        let mut top_level_scope = Scope::new(None);
+        top_level_scope.add_builtin("+", Verb(Arity::Binary));
+        top_level_scope.add_builtin("*", Verb(Arity::Binary));
+        top_level_scope.add_builtin(".", Adverb(Arity::Binary, Arity::Binary));
+        top_level_scope.add_builtin("fold", Adverb(Arity::Unary, Arity::Unary));
+        top_level_scope.add_builtin("flip", Adverb(Arity::Unary, Arity::Binary));
+        top_level_scope.add_builtin("x", Noun);
+        top_level_scope.add_builtin("y", Noun);
+        let top_level_scope = Rc::new(top_level_scope);
+        let scope = Scope::new(Some(Rc::clone(&top_level_scope)));
+        let scope = parse_body(scope, assignments);
+        print_assignments(&scope)
     }
 
     #[test]
@@ -1264,11 +1348,46 @@ foo_2 (n) = (+ foo_1 1)
     }
 
     #[test]
-    #[should_panic]
     fn test_recursive_reference() {
-        // TODO: this shouldn't panic; this should return an error that says
-        // there's a cyclic reference
-        k9::snapshot!(test_body(vec![assign("foo", "foo + 1")]), "");
+        k9::snapshot!(
+            test_body(vec![assign("foo", "foo + 1")]),
+            "foo depends on foo"
+        );
+    }
+
+    #[test]
+    fn test_error_propagation() {
+        k9::snapshot!(
+            test_body(vec![assign("foo", "[+]"), assign("bar", "foo + 1")]),
+            "
+foo failed: ArrayLiteralNotNoun
+bar depends on failed foo
+"
+        );
+    }
+
+    #[test]
+    fn test_cyclic_reference() {
+        k9::snapshot!(
+            test_body(vec![assign("foo", "bar + 1"), assign("bar", "foo + 1")]),
+            "
+foo depends on bar
+bar depends on foo
+"
+        );
+
+        k9::snapshot!(
+            test_body(vec![
+                assign("foo", "bar + 1"),
+                assign("bar", "baz + 1"),
+                assign("baz", "foo + 1")
+            ]),
+            "
+foo depends on bar
+bar depends on baz
+baz depends on foo
+"
+        );
     }
 
     #[test]
