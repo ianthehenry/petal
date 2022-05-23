@@ -1,5 +1,11 @@
 use super::tokenizer::Token;
-use std::fmt;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fmt,
+    hash::{Hash, Hasher},
+    rc::Rc,
+};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
@@ -21,7 +27,7 @@ pub enum Builtin {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Atom {
     Int64(i64),
-    Identifier(String),
+    Identifier(RichIdentifier),
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -56,7 +62,38 @@ pub enum Term {
     BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
 }
 
-#[derive(Debug)]
+fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Term, f: &mut F) -> Term {
+    use Term::*;
+    match term {
+        Atom(a) => Atom(f(a)),
+        Parens(term) => Parens(Box::new(rewrite_atoms(&*term, f))),
+        Implicit(x) => Implicit(*x),
+        Tuple(terms) => Tuple(
+            terms
+                .into_iter()
+                .map(|term| rewrite_atoms(term, f))
+                .collect(),
+        ),
+        Brackets(terms) => Brackets(
+            terms
+                .into_iter()
+                .map(|term| rewrite_atoms(term, f))
+                .collect(),
+        ),
+        UnaryApplication(term1, term2) => UnaryApplication(
+            Box::new(rewrite_atoms(&*term1, f)),
+            Box::new(rewrite_atoms(&*term2, f)),
+        ),
+        BinaryApplication(term1, term2, term3) => BinaryApplication(
+            Box::new(rewrite_atoms(&*term1, f)),
+            Box::new(rewrite_atoms(&*term2, f)),
+            Box::new(rewrite_atoms(&*term3, f)),
+        ),
+    }
+}
+
+// TODO: should not be clone
+#[derive(Debug, Clone)]
 pub enum ParseError {
     DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
     ArrayLiteralNotNoun,
@@ -459,6 +496,343 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
     }
 }
 
+struct Assignment {
+    name: String,
+    expression: Vec<Word>,
+}
+
+// "partial" means that it's waiting for an identifier that has not been seen at
+// all yet. "semipartial" means that we know *which* identifier we're waiting
+// for, but we don't know its part of speech yet.
+enum ParseStatus {
+    Complete(Term, PartOfSpeech),
+    Partial(String, Vec<ParseFrame>),
+    Semipartial(Identifier, Vec<ParseFrame>),
+    Failed(ParseError),
+}
+
+type Identifier = u64;
+
+#[derive(Eq, Debug, Clone)]
+pub struct RichIdentifier {
+    id: Identifier,
+    name: String,
+}
+
+impl RichIdentifier {
+    fn new(id: Identifier, name: String) -> Self {
+        RichIdentifier { id, name }
+    }
+}
+
+impl fmt::Display for RichIdentifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl PartialEq for RichIdentifier {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Hash for RichIdentifier {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+struct ParseOperation {
+    id: Identifier,
+    call_stack: Vec<ParseFrame>,
+}
+
+impl ParseOperation {
+    fn new(id: Identifier, call_stack: Vec<ParseFrame>) -> Self {
+        ParseOperation { id, call_stack }
+    }
+}
+
+struct Scope {
+    name_to_ids: HashMap<String, Vec<Identifier>>,
+    id_to_name: HashMap<Identifier, String>,
+
+    blocked_on_name: HashMap<String, Vec<ParseOperation>>,
+    blocked_on_id: HashMap<Identifier, Vec<ParseOperation>>,
+    complete: HashMap<Identifier, (Term, PartOfSpeech)>,
+    failed: HashMap<Identifier, ParseError>,
+    unblocked: Vec<ParseOperation>,
+
+    parent_scope: Option<Rc<Scope>>,
+    allocator: Rc<RefCell<Allocator>>,
+}
+
+struct Allocator {
+    current: Identifier,
+}
+
+impl Allocator {
+    fn new() -> Self {
+        Allocator { current: 0 }
+    }
+    fn next(&mut self) -> Identifier {
+        let x = self.current;
+        self.current += 1;
+        x
+    }
+}
+
+enum LookupResult<'a> {
+    Unknown,
+    Pending(Identifier),
+    Failed(Identifier, &'a ParseError),
+    Complete(Identifier, &'a Term, PartOfSpeech),
+}
+
+impl Scope {
+    fn new(parent_scope: Option<Rc<Scope>>) -> Scope {
+        Scope {
+            name_to_ids: HashMap::new(),
+            id_to_name: HashMap::new(),
+            allocator: match &parent_scope {
+                None => Rc::new(RefCell::new(Allocator::new())),
+                Some(parent_scope) => parent_scope.allocator.clone(),
+            },
+            parent_scope,
+            blocked_on_name: HashMap::new(),
+            blocked_on_id: HashMap::new(),
+            complete: HashMap::new(),
+            failed: HashMap::new(),
+            unblocked: vec![],
+        }
+    }
+
+    fn add_builtin(&mut self, name: &str, pos: PartOfSpeech) {
+        let name = name.to_string();
+        let id = self.learn_name(name.clone());
+        self.complete.insert(
+            id,
+            (
+                Term::Atom(Atom::Identifier(RichIdentifier::new(id, name))),
+                pos,
+            ),
+        );
+    }
+
+    fn begin(&mut self, assignment: Assignment) {
+        let Assignment { name, expression } = assignment;
+        let frame = ParseFrame::new(expression, identity);
+        let call_stack = vec![frame];
+        let id = self.learn_name(name);
+        self.unblocked.push(ParseOperation { id, call_stack });
+    }
+
+    fn blocked_on_name(&mut self, missing_name: String, parse: ParseOperation) {
+        self.blocked_on_name
+            .entry(missing_name)
+            .or_insert_with(|| vec![])
+            .push(parse);
+    }
+
+    fn blocked_on_id(&mut self, missing_id: Identifier, parse: ParseOperation) {
+        self.blocked_on_id
+            .entry(missing_id)
+            .or_insert_with(|| vec![])
+            .push(parse);
+    }
+
+    fn failed(&mut self, id: Identifier, error: ParseError) {
+        if let Some(parses) = self.blocked_on_id.remove(&id) {
+            for parse in parses {
+                // TODO: create a new error for this
+                self.failed.insert(parse.id, error.clone());
+                panic!("we don't have a derived error type");
+            }
+        }
+
+        self.failed.insert(id, error).unwrap();
+    }
+
+    fn name_of_id(&self, id: &Identifier) -> String {
+        if let Some(name) = self.id_to_name.get(id) {
+            return name.clone();
+        }
+        match &self.parent_scope {
+            None => panic!("identifier not found"),
+            Some(scope) => scope.name_of_id(id),
+        }
+    }
+
+    fn complete(&mut self, id: Identifier, term: Term, pos: PartOfSpeech) {
+        let rich_id = RichIdentifier {
+            name: self.name_of_id(&id),
+            id,
+        };
+        if let Some(parses) = self.blocked_on_id.remove(&id) {
+            for mut parse in parses {
+                provide(
+                    &mut parse.call_stack,
+                    Term::Atom(Atom::Identifier(rich_id.clone())),
+                    pos,
+                );
+                self.unblocked.push(parse);
+            }
+        }
+        assert!(self.complete.insert(id, (term, pos)).is_none());
+    }
+
+    fn lookup_previous_identifier(&self, name: &String, as_of: Identifier) -> Option<Identifier> {
+        match self.name_to_ids.get(name) {
+            Some(bindings) => bindings
+                .iter()
+                .filter(|id| **id < as_of)
+                .map(Identifier::clone)
+                .last(),
+            None => match &self.parent_scope {
+                None => None,
+                Some(scope) => scope.lookup_previous_identifier(name, as_of),
+            },
+        }
+    }
+
+    fn lookup_next_identifier(&self, name: &String, as_of: Identifier) -> Option<Identifier> {
+        match self.name_to_ids.get(name) {
+            Some(bindings) => bindings
+                .iter()
+                .filter(|id| **id >= as_of)
+                .map(Identifier::clone)
+                .next(),
+            None => match &self.parent_scope {
+                None => None,
+                Some(scope) => scope.lookup_next_identifier(name, as_of),
+            },
+        }
+    }
+
+    // TODO: this is stupidly (number of definitions * depth of scope). because
+    // everything is sorted, this could easily be (log(number of definitions) *
+    // depth of scope)
+    fn lookup_identifier(&self, name: &String, as_of: Identifier) -> Option<Identifier> {
+        match self.lookup_previous_identifier(name, as_of) {
+            Some(id) => Some(id),
+            None => self.lookup_next_identifier(name, as_of),
+        }
+    }
+
+    fn lookup_by_id(&self, id: Identifier) -> LookupResult {
+        if let Some((term, pos)) = self.complete.get(&id) {
+            return LookupResult::Complete(id, term, *pos);
+        }
+        if let Some(error) = self.failed.get(&id) {
+            return LookupResult::Failed(id, error);
+        }
+        // a more "obvious" approach would be to check the two "blocked" keys
+        // for the Pending result and then panic if we never find something. but
+        // that would require either linearly scanning the blocked dictionaries
+        // or storing an extra map. so we're taking advantage of the invariant
+        // that we only have Identifiers for names that are pending
+        match &self.parent_scope {
+            None => LookupResult::Pending(id),
+            Some(scope) => scope.lookup_by_id(id),
+        }
+    }
+
+    fn lookup(&self, name: &String, as_of: Identifier) -> LookupResult {
+        match self.lookup_identifier(name, as_of) {
+            Some(id) => self.lookup_by_id(id),
+            None => LookupResult::Unknown,
+        }
+    }
+
+    fn learn_name(&mut self, name: String) -> Identifier {
+        let id = self.allocator.borrow_mut().next();
+
+        assert!(self.id_to_name.insert(id, name.clone()).is_none());
+
+        if let Some(parses) = self.blocked_on_name.remove(&name) {
+            for parse in parses {
+                self.blocked_on_id(id, parse);
+            }
+        }
+        let vec = self.name_to_ids.entry(name).or_insert_with(|| vec![]);
+        vec.push(id);
+        id
+    }
+}
+
+fn parse_body(assignments: Vec<Assignment>) -> Scope {
+    let mut top_level_scope = Scope::new(None);
+    top_level_scope.add_builtin("+", Verb(Arity::Binary));
+    top_level_scope.add_builtin("*", Verb(Arity::Binary));
+    top_level_scope.add_builtin(".", Adverb(Arity::Binary, Arity::Binary));
+    top_level_scope.add_builtin("fold", Adverb(Arity::Unary, Arity::Unary));
+    top_level_scope.add_builtin("flip", Adverb(Arity::Unary, Arity::Binary));
+    top_level_scope.add_builtin("x", Noun);
+    top_level_scope.add_builtin("y", Noun);
+
+    let top_level_scope = Rc::new(top_level_scope);
+
+    let mut current_scope = Scope::new(Some(Rc::clone(&top_level_scope)));
+
+    let mut input_queue = assignments;
+    // we have to process top-to-bottom
+    input_queue.reverse();
+
+    while let Some(assignment) = input_queue.pop() {
+        current_scope.begin(assignment);
+        while let Some(ParseOperation { id, mut call_stack }) = current_scope.unblocked.pop() {
+            loop {
+                match parse(call_stack) {
+                    Err(e) => {
+                        current_scope.failed(id, e);
+                        break;
+                    }
+                    Ok(ParseResult::Complete(term, pos)) => {
+                        current_scope.complete(id, term, pos);
+                        break;
+                    }
+                    Ok(ParseResult::Partial(missing_name, stack)) => {
+                        // TODO: should add support for "not yet parsed but part of
+                        // speech already known"
+                        match current_scope.lookup(&missing_name, id) {
+                            LookupResult::Unknown => {
+                                current_scope
+                                    .blocked_on_name(missing_name, ParseOperation::new(id, stack));
+                                break;
+                            }
+                            LookupResult::Pending(missing_id) => {
+                                current_scope
+                                    .blocked_on_id(missing_id, ParseOperation::new(id, stack));
+                                break;
+                            }
+                            LookupResult::Failed(id, error) => {
+                                // TODO: should make a new error
+                                let e = error.clone();
+                                current_scope.failed(id, e);
+                                panic!("i guess this should become an error?");
+                            }
+                            LookupResult::Complete(missing_id, _term, pos) => {
+                                call_stack = stack;
+                                provide(
+                                    &mut call_stack,
+                                    Term::Atom(Atom::Identifier(RichIdentifier::new(
+                                        missing_id,
+                                        missing_name,
+                                    ))),
+                                    pos,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    current_scope
+}
+
 fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
     let top_frame = call_stack.last_mut().unwrap();
     top_frame.stack.push(Some((term, pos)));
@@ -547,9 +921,9 @@ mod tests {
         loop {
             match parse(call_stack)? {
                 Complete(term, pos) => return Ok((term, pos)),
-                Partial(id, stack) => {
+                Partial(name, stack) => {
                     call_stack = stack;
-                    let pos = match id.as_str() {
+                    let pos = match name.as_str() {
                         "+" | "*" => Verb(Arity::Binary),
                         "neg" | "sign" => Verb(Arity::Unary),
                         "." => Adverb(Arity::Binary, Arity::Binary),
@@ -558,7 +932,11 @@ mod tests {
                         "x" | "y" => Noun,
                         _ => panic!("unknown identifier"),
                     };
-                    provide(&mut call_stack, Term::Atom(Atom::Identifier(id)), pos);
+                    provide(
+                        &mut call_stack,
+                        Term::Atom(Atom::Identifier(RichIdentifier { name, id: 0 })),
+                        pos,
+                    );
                 }
             }
         }
@@ -740,7 +1118,10 @@ mod tests {
     }
 
     fn id(name: &str) -> Term {
-        Term::Atom(Atom::Identifier(name.to_string()))
+        Term::Atom(Atom::Identifier(RichIdentifier {
+            name: name.to_string(),
+            id: 0,
+        }))
     }
 
     #[test]
@@ -758,5 +1139,160 @@ mod tests {
         let (result, call_stack) = advance(call_stack.unwrap());
         k9::snapshot!(result, "n:(+ x foo)");
         k9::snapshot!(call_stack, "None");
+    }
+
+    fn assign(name: &str, expr: &str) -> Assignment {
+        let tokens = tokenizer::tokenize(expr);
+        let words = resolve_semicolons(tokens, Delimiter::Parens);
+        Assignment {
+            name: name.to_string(),
+            expression: words,
+        }
+    }
+
+    struct Disambiguator {
+        name_indices: HashMap<String, u64>,
+        name_seen_at: HashMap<RichIdentifier, u64>,
+    }
+
+    impl Disambiguator {
+        fn new() -> Self {
+            Disambiguator {
+                name_indices: HashMap::new(),
+                name_seen_at: HashMap::new(),
+            }
+        }
+
+        fn see(&mut self, rich_id: RichIdentifier) {
+            match self.name_seen_at.get(&rich_id) {
+                None => {
+                    let ix = self.name_indices.entry(rich_id.name.clone()).or_insert(0);
+                    self.name_seen_at.insert(rich_id, *ix);
+                    *ix = *ix + 1;
+                }
+                Some(name_index) => (),
+            };
+        }
+
+        fn view(&self, rich_id: &RichIdentifier) -> String {
+            let name_index = *self.name_seen_at.get(rich_id).unwrap();
+            if name_index == 0 {
+                rich_id.name.clone()
+            } else {
+                format!("{}_{}", rich_id.name, name_index)
+            }
+        }
+    }
+
+    fn test_body(assignments: Vec<Assignment>) -> String {
+        let scope = parse_body(assignments);
+        let mut result = "".to_string();
+        let mut first = true;
+        assert!(scope.failed.is_empty());
+        assert!(scope.blocked_on_id.is_empty());
+        assert!(scope.blocked_on_name.is_empty());
+        assert!(scope.unblocked.is_empty());
+
+        let mut disambiguator = Disambiguator::new();
+
+        let mut kvps = scope.complete.iter().collect::<Vec<_>>();
+        kvps.sort_by_key(|x| x.0);
+
+        for (id, (term, pos)) in kvps {
+            let name = scope.name_of_id(&id);
+            let rich_id = RichIdentifier { id: *id, name };
+            disambiguator.see(rich_id.clone());
+
+            // TODO: do this with mutation?
+            let mut f = |atom: &Atom| match atom {
+                Atom::Identifier(rich_id) => {
+                    disambiguator.see(rich_id.clone());
+                    Atom::Identifier(RichIdentifier {
+                        id: rich_id.id,
+                        name: disambiguator.view(rich_id),
+                    })
+                }
+                _ => atom.clone(),
+            };
+            let term = rewrite_atoms(term, &mut f);
+
+            if first {
+                first = false;
+            } else {
+                result.push('\n');
+            }
+            result.push_str(&format!(
+                "{} ({}) = {}",
+                disambiguator.view(&rich_id),
+                pos,
+                term
+            ));
+        }
+        result
+    }
+
+    #[test]
+    fn test_independent_assignments() {
+        k9::snapshot!(
+            test_body(vec![assign("foo", "1 + 2"), assign("bar", "3 + 4")]),
+            "
+foo (n) = (+ 1 2)
+bar (n) = (+ 3 4)
+"
+        );
+    }
+
+    #[test]
+    fn test_shadowing() {
+        k9::snapshot!(
+            test_body(vec![assign("foo", "1"), assign("foo", "2")]),
+            "
+foo (n) = 1
+foo_1 (n) = 2
+"
+        );
+    }
+
+    #[test]
+    fn test_backreference() {
+        k9::snapshot!(
+            test_body(vec![assign("foo", "1"), assign("bar", "foo + 1")]),
+            "
+foo (n) = 1
+bar (n) = (+ foo 1)
+"
+        );
+
+        k9::snapshot!(
+            test_body(vec![
+                assign("foo", "1"),
+                assign("foo", "foo + 1"),
+                assign("foo", "foo + 1")
+            ]),
+            "
+foo (n) = 1
+foo_1 (n) = (+ foo 1)
+foo_2 (n) = (+ foo_1 1)
+"
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_recursive_reference() {
+        // TODO: this shouldn't panic; this should return an error that says
+        // there's a cyclic reference
+        k9::snapshot!(test_body(vec![assign("foo", "foo + 1")]), "");
+    }
+
+    #[test]
+    fn test_forward_reference() {
+        k9::snapshot!(
+            test_body(vec![assign("foo", "bar + 1"), assign("bar", "1")]),
+            "
+foo (n) = (+ bar 1)
+bar (n) = 1
+"
+        );
     }
 }
