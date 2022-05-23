@@ -68,18 +68,8 @@ fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Term, f: &mut F) -> Term {
         Atom(a) => Atom(f(a)),
         Parens(term) => Parens(Box::new(rewrite_atoms(&*term, f))),
         Implicit(x) => Implicit(*x),
-        Tuple(terms) => Tuple(
-            terms
-                .into_iter()
-                .map(|term| rewrite_atoms(term, f))
-                .collect(),
-        ),
-        Brackets(terms) => Brackets(
-            terms
-                .into_iter()
-                .map(|term| rewrite_atoms(term, f))
-                .collect(),
-        ),
+        Tuple(terms) => Tuple(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
+        Brackets(terms) => Brackets(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
         UnaryApplication(term1, term2) => UnaryApplication(
             Box::new(rewrite_atoms(&*term1, f)),
             Box::new(rewrite_atoms(&*term2, f)),
@@ -92,11 +82,11 @@ fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Term, f: &mut F) -> Term {
     }
 }
 
-// TODO: should not be clone
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ParseError {
     DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
     ArrayLiteralNotNoun,
+    BadReference(Identifier),
 }
 
 impl fmt::Display for Atom {
@@ -631,23 +621,21 @@ impl Scope {
     fn blocked_on_name(&mut self, missing_name: String, parse: ParseOperation) {
         self.blocked_on_name
             .entry(missing_name)
-            .or_insert_with(|| vec![])
+            .or_insert_with(Vec::new)
             .push(parse);
     }
 
     fn blocked_on_id(&mut self, missing_id: Identifier, parse: ParseOperation) {
         self.blocked_on_id
             .entry(missing_id)
-            .or_insert_with(|| vec![])
+            .or_insert_with(Vec::new)
             .push(parse);
     }
 
     fn failed(&mut self, id: Identifier, error: ParseError) {
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for parse in parses {
-                // TODO: create a new error for this
-                self.failed.insert(parse.id, error.clone());
-                panic!("we don't have a derived error type");
+                self.failed.insert(parse.id, ParseError::BadReference(id));
             }
         }
 
@@ -682,7 +670,7 @@ impl Scope {
         assert!(self.complete.insert(id, (term, pos)).is_none());
     }
 
-    fn lookup_previous_identifier(&self, name: &String, as_of: Identifier) -> Option<Identifier> {
+    fn lookup_previous_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
         match self.name_to_ids.get(name) {
             Some(bindings) => bindings
                 .iter()
@@ -696,7 +684,7 @@ impl Scope {
         }
     }
 
-    fn lookup_next_identifier(&self, name: &String, as_of: Identifier) -> Option<Identifier> {
+    fn lookup_next_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
         match self.name_to_ids.get(name) {
             Some(bindings) => bindings
                 .iter()
@@ -713,7 +701,7 @@ impl Scope {
     // TODO: this is stupidly (number of definitions * depth of scope). because
     // everything is sorted, this could easily be (log(number of definitions) *
     // depth of scope)
-    fn lookup_identifier(&self, name: &String, as_of: Identifier) -> Option<Identifier> {
+    fn lookup_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
         match self.lookup_previous_identifier(name, as_of) {
             Some(id) => Some(id),
             None => self.lookup_next_identifier(name, as_of),
@@ -738,7 +726,7 @@ impl Scope {
         }
     }
 
-    fn lookup(&self, name: &String, as_of: Identifier) -> LookupResult {
+    fn lookup(&self, name: &str, as_of: Identifier) -> LookupResult {
         match self.lookup_identifier(name, as_of) {
             Some(id) => self.lookup_by_id(id),
             None => LookupResult::Unknown,
@@ -755,7 +743,7 @@ impl Scope {
                 self.blocked_on_id(id, parse);
             }
         }
-        let vec = self.name_to_ids.entry(name).or_insert_with(|| vec![]);
+        let vec = self.name_to_ids.entry(name).or_insert_with(Vec::new);
         vec.push(id);
         id
     }
@@ -806,11 +794,9 @@ fn parse_body(assignments: Vec<Assignment>) -> Scope {
                                     .blocked_on_id(missing_id, ParseOperation::new(id, stack));
                                 break;
                             }
-                            LookupResult::Failed(id, error) => {
-                                // TODO: should make a new error
-                                let e = error.clone();
-                                current_scope.failed(id, e);
-                                panic!("i guess this should become an error?");
+                            LookupResult::Failed(id, _) => {
+                                current_scope.failed(id, ParseError::BadReference(id));
+                                break;
                             }
                             LookupResult::Complete(missing_id, _term, pos) => {
                                 call_stack = stack;
