@@ -1,73 +1,107 @@
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while},
-    character::{
-        complete::{
-            alpha1, char, digit1, line_ending, multispace1, one_of, satisfy, space0, space1,
-        },
-        streaming::none_of,
-    },
-    combinator::{eof, fail, map, map_res, opt, success, verify},
-    multi::{many0, many1, separated_list0},
-    sequence::{delimited, preceded, terminated, tuple},
+    bytes::complete::{tag, take_while1},
+    character::complete::{char, line_ending, space0, space1},
+    combinator::{eof, map, opt, recognize, verify},
+    multi::many0,
+    sequence::tuple,
     IResult, Parser,
 };
+use nom_locate::LocatedSpan;
+
+type Span<'a> = LocatedSpan<&'a str>;
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Token<'a> {
-    Atom(&'a str),
+// TODO: comments, string literals, etc. certain types of comments are actually
+// significant...
+pub struct Token<'a> {
+    span: Span<'a>,
+    type_: TokenType,
+}
+
+impl<'a> Token<'a> {
+    fn new(span: Span<'a>, type_: TokenType) -> Self {
+        Token { span, type_ }
+    }
+
+    fn build(type_: TokenType) -> impl Fn(Span<'a>) -> Token<'a> {
+        move |span: Span| Token { span, type_ }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum TokenType {
+    Identifier,
+    PunctuationSoup,
+    NumericLiteral,
     EqualSign,
     OpenParen,
     CloseParen,
     OpenBracket,
     CloseBracket,
-    Semicolons(usize),
+    Semicolons,
     Space,
     Newline,
     Indent,
     Outdent,
 }
 
-// TODO: comments, string literals, etc
-fn atom(i: &str) -> IResult<&str, Token> {
-    let pred = |c| !(char::is_whitespace(c) || "()[];".contains(c));
+fn identifier(i: Span) -> IResult<Span, Token> {
     map(
-        verify(take_while(pred), |s: &str| !s.is_empty() && s != "="),
-        |op| Token::Atom(op),
+        take_while1(char::is_alphabetic),
+        Token::build(TokenType::Identifier),
     )(i)
 }
 
-fn semicolons(i: &str) -> IResult<&str, Token> {
-    map(many1(char(';')), |semis| Token::Semicolons(semis.len()))(i)
+fn numeric_literal(i: Span) -> IResult<Span, Token> {
+    map(
+        recognize(tuple((opt(char('-')), take_while1(char::is_numeric)))),
+        Token::build(TokenType::NumericLiteral),
+    )(i)
 }
 
-fn token(i: &str) -> IResult<&str, Token> {
-    use Token::*;
+fn punctuation_soup<'a>(i: Span<'a>) -> IResult<Span<'a>, Token<'a>> {
+    fn is_operator_punctuation(c: char) -> bool {
+        !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];".contains(c))
+    }
+    map(
+        verify(take_while1(is_operator_punctuation), |s: &Span| **s != "="),
+        Token::build(TokenType::PunctuationSoup),
+    )(i)
+}
+
+fn semicolons(i: Span) -> IResult<Span, Token> {
+    map(
+        take_while1(|c| c == ';'),
+        Token::build(TokenType::Semicolons),
+    )(i)
+}
+
+fn token(i: Span) -> IResult<Span, Token> {
+    use TokenType::*;
     alt((
-        atom,
+        identifier,
+        numeric_literal,
+        punctuation_soup,
         semicolons,
-        replace(char('('), OpenParen),
-        replace(char(')'), CloseParen),
-        replace(char('['), OpenBracket),
-        replace(char(']'), CloseBracket),
-        replace(char('='), EqualSign),
-        replace(space1, Space),
+        map(tag("("), Token::build(OpenParen)),
+        map(tag(")"), Token::build(CloseParen)),
+        map(tag("["), Token::build(OpenBracket)),
+        map(tag("]"), Token::build(CloseBracket)),
+        map(tag("="), Token::build(EqualSign)),
+        map(space1, Token::build(Space)),
     ))(i)
 }
 
-fn tokens(i: &str) -> IResult<&str, Vec<Token>> {
-    separated_list0(multispace1, token)(i)
-}
-
-fn eol(i: &str) -> IResult<&str, ()> {
+fn eol(i: Span) -> IResult<Span, ()> {
     ignore(alt((line_ending, eof)))(i)
 }
 
-fn newline(i: &str) -> IResult<&str, ()> {
+fn newline(i: Span) -> IResult<Span, ()> {
     ignore(line_ending)(i)
 }
 
-fn parse_lines(i: &str) -> IResult<&str, Vec<Token>> {
+pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
     let mut result = Vec::new();
     let mut indentation_stack: Vec<usize> = vec![0];
 
@@ -85,23 +119,23 @@ fn parse_lines(i: &str) -> IResult<&str, Vec<Token>> {
             continue;
         }
 
-        let (i, spaces) = space0(i)?;
+        let (i, spaces) = recognize(space0)(i)?;
         let this_indentation = spaces.len();
         let previous_indentation = *indentation_stack.last().unwrap();
         if this_indentation > previous_indentation {
             indentation_stack.push(this_indentation);
-            result.push(Token::Indent);
+            result.push(Token::new(spaces, TokenType::Indent));
         } else if this_indentation < previous_indentation {
             loop {
                 let candidate = *indentation_stack.last().unwrap();
                 if candidate < this_indentation {
                     // TODO: this should return a custom error for an illegal outdent
-                    return Err(nom::Err::Error(nom::error::Error::<&str>::new(
+                    return Err(nom::Err::Error(nom::error::Error::<Span>::new(
                         i,
                         nom::error::ErrorKind::Fail,
                     )));
                 } else if candidate > this_indentation {
-                    result.push(Token::Outdent);
+                    result.push(Token::new(spaces.clone(), TokenType::Outdent));
                     indentation_stack.pop();
                 } else if candidate == this_indentation {
                     break;
@@ -111,8 +145,8 @@ fn parse_lines(i: &str) -> IResult<&str, Vec<Token>> {
         let (i, tokens) = many0(token)(i)?;
         result.extend(tokens);
 
-        if let Ok((i, _)) = newline(i) {
-            result.push(Token::Newline);
+        if let Ok((i, nl)) = recognize(newline)(i) {
+            result.push(Token::new(nl, TokenType::Newline));
             remaining = i;
         } else {
             let (i, ()) = ignore(eof)(i)?;
@@ -142,6 +176,7 @@ where
 }
 
 pub fn tokenize(i: &str) -> Vec<Token> {
+    let i = LocatedSpan::new(i);
     let (remaining, tokens) = parse_lines(i).unwrap();
     if !remaining.is_empty() {
         panic!("tokenize error, remaining: {:?}", remaining);
@@ -153,31 +188,20 @@ pub fn tokenize(i: &str) -> Vec<Token> {
 mod tests {
     use super::*;
 
-    impl<'a> Token<'a> {
-        fn to_short_string(&self) -> String {
-            match self {
-                Token::Atom(atom) => atom.to_string(),
-                Token::OpenParen => "(".to_string(),
-                Token::CloseParen => ")".to_string(),
-                Token::Space => "␠".to_string(),
-                Token::Newline => "␤".to_string(),
-                Token::Semicolons(count) => ";".repeat(*count),
-                Token::OpenBracket => "[".to_string(),
-                Token::CloseBracket => "]".to_string(),
-                Token::EqualSign => "=".to_string(),
-                Token::Indent => "→".to_string(),
-                Token::Outdent => "←".to_string(),
-            }
+    fn show_token(token: &Token) -> String {
+        use TokenType::*;
+        match token.type_ {
+            Space => "␠".to_string(),
+            Newline => "␤".to_string(),
+            Indent => "→".to_string(),
+            Outdent => "←".to_string(),
+            _ => token.span.fragment().to_string(),
         }
     }
 
     fn test(input: &str) -> String {
         let tokens = tokenize(input);
-        tokens
-            .iter()
-            .map(|x| x.to_short_string())
-            .collect::<Vec<_>>()
-            .join(" ")
+        tokens.iter().map(show_token).collect::<Vec<_>>().join(" ")
     }
 
     #[test]
@@ -191,7 +215,19 @@ x= 10
 x = 10
 "
             ),
-            "x=10 ␤ x ␠ =10 ␤ x= ␠ 10 ␤ x ␠ = ␠ 10 ␤"
+            "x = 10 ␤ x ␠ = 10 ␤ x = ␠ 10 ␤ x ␠ = ␠ 10 ␤"
+        );
+
+        k9::snapshot!(
+            test(
+                "
+<=10
+< =10
+<= 10
+< = 10
+"
+            ),
+            "<= 10 ␤ < ␠ = 10 ␤ <= ␠ 10 ␤ < ␠ = ␠ 10 ␤"
         );
     }
 
@@ -220,18 +256,30 @@ g
     #[test]
     fn illegal_outdent() {
         k9::snapshot!(
-            parse_lines(
+            parse_lines(LocatedSpan::new(
                 "
 a
   b
  c
 d
 "
-            ),
+            )),
             r#"
-Err(Error(Error { input: "c
+Err(
+    Error(
+        Error {
+            input: LocatedSpan {
+                offset: 8,
+                line: 4,
+                fragment: "c
 d
-", code: Fail }))
+",
+                extra: (),
+            },
+            code: Fail,
+        },
+    ),
+)
 "#
         );
     }
