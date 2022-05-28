@@ -153,10 +153,6 @@ fn eol(i: Span) -> IResult<Span, ()> {
     ignore(alt((line_ending, eof)))(i)
 }
 
-fn newline(i: Span) -> IResult<Span, ()> {
-    ignore(line_ending)(i)
-}
-
 pub fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
     let mut result = Vec::new();
     let mut indentation_stack: Vec<usize> = vec![0];

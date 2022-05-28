@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use dim::{new_parser, new_tokenizer, parser, tokenizer};
+use std::{fs, path::PathBuf};
 use structopt::StructOpt;
 
 #[derive(StructOpt)]
@@ -19,17 +20,13 @@ fn main() {
     match Command::from_args() {
         Command::Run { filenames, inline } => {
             println!("{:?} {}", filenames, inline);
-            // for filename in filenames {
-            //     let contents = fs::read_to_string(filename).expect("unable to read file");
-            //     let tokens = tokenizer::tokenize(&contents);
-            //     match parser::parse_tokens(tokens) {
-            //         Ok(annotated_term) => println!("{:?}", annotated_term),
-            //         Err(parser::ParseError::DidNotFullyReduce(terms)) => {
-            //             panic!("incomplete parse: {:?}", terms)
-            //         }
-            //         Err(error) => panic!("error: {:?}", error),
-            //     }
-            // }
+            for filename in filenames {
+                let contents = fs::read_to_string(filename).expect("unable to read file");
+                let tokens = tokenizer::tokenize(&contents);
+                let new_tokens = new_tokenizer::tokenize(&contents);
+                new_parser::parse_tokens(new_tokens).unwrap();
+                parser::just_parse(tokens).unwrap();
+            }
         }
         Command::Eval { expression } => println!("{}", expression),
     }

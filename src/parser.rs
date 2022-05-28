@@ -62,26 +62,6 @@ pub enum Term {
     BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
 }
 
-fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Term, f: &mut F) -> Term {
-    use Term::*;
-    match term {
-        Atom(a) => Atom(f(a)),
-        Parens(term) => Parens(Box::new(rewrite_atoms(&*term, f))),
-        Implicit(x) => Implicit(*x),
-        Tuple(terms) => Tuple(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
-        Brackets(terms) => Brackets(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
-        UnaryApplication(term1, term2) => UnaryApplication(
-            Box::new(rewrite_atoms(&*term1, f)),
-            Box::new(rewrite_atoms(&*term2, f)),
-        ),
-        BinaryApplication(term1, term2, term3) => BinaryApplication(
-            Box::new(rewrite_atoms(&*term1, f)),
-            Box::new(rewrite_atoms(&*term2, f)),
-            Box::new(rewrite_atoms(&*term3, f)),
-        ),
-    }
-}
-
 #[derive(Debug)]
 pub enum ParseError {
     DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
@@ -445,6 +425,15 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
 
             _ => break,
         }
+    }
+}
+
+pub fn just_parse(tokens: Vec<Token>) -> Result<(Term, PartOfSpeech), ParseError> {
+    let words = resolve_semicolons(tokens, Delimiter::Parens);
+    let frame = ParseFrame::new(words, identity);
+    match parse(vec![frame])? {
+        ParseResult::Complete(term, pos) => Ok((term, pos)),
+        ParseResult::Partial(_, _) => panic!("partial parse"),
     }
 }
 
@@ -1173,6 +1162,26 @@ mod tests {
         Failed(&'a ParseError),
         Cyclic(&'a Identifier),
         Pending(&'a str),
+    }
+
+    fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Term, f: &mut F) -> Term {
+        use Term::*;
+        match term {
+            Atom(a) => Atom(f(a)),
+            Parens(term) => Parens(Box::new(rewrite_atoms(&*term, f))),
+            Implicit(x) => Implicit(*x),
+            Tuple(terms) => Tuple(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
+            Brackets(terms) => Brackets(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
+            UnaryApplication(term1, term2) => UnaryApplication(
+                Box::new(rewrite_atoms(&*term1, f)),
+                Box::new(rewrite_atoms(&*term2, f)),
+            ),
+            BinaryApplication(term1, term2, term3) => BinaryApplication(
+                Box::new(rewrite_atoms(&*term1, f)),
+                Box::new(rewrite_atoms(&*term2, f)),
+                Box::new(rewrite_atoms(&*term3, f)),
+            ),
+        }
     }
 
     fn print_assignments(scope: &Scope) -> String {

@@ -155,10 +155,6 @@ fn identifier(i: Tokens) -> ParseResult<String> {
     })(i)
 }
 
-fn token_matching<'a>(token: Token) -> impl FnMut(Tokens<'a>) -> TokenResult<'a> {
-    verify(any_token, move |t: &LocatedToken| t.token == token)
-}
-
 fn skip_token<'a>(token: Token) -> impl FnMut(Tokens<'a>) -> UnitResult {
     ignore(verify(any_token, move |t: &LocatedToken| t.token == token))
 }
@@ -235,11 +231,26 @@ fn statements(i: Tokens) -> ParseResult<Vec<Statement>> {
     Ok((i, statements))
 }
 
+pub fn parse_tokens(tokens: Vec<LocatedToken>) -> Result<Vec<Statement>, String> {
+    let tokens = Tokens(&tokens);
+
+    match statements(tokens) {
+        Ok((remaining, block)) => {
+            if remaining.is_empty() {
+                Ok(block)
+            } else {
+                Err(format!("parse was not total. remaining: {:?}", remaining))
+            }
+        }
+        Err(e) => Err(format!("{}", e)),
+    }
+}
+
 type Block = Vec<Statement>;
 type Expression = Vec<LocatedToken>;
 
 #[derive(Debug)]
-enum Statement {
+pub enum Statement {
     SimpleAssignment(String, Expression),
     CompoundAssignment(String, Block),
     Expression(Expression),
