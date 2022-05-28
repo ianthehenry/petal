@@ -172,6 +172,7 @@ mod tests {
         k9::snapshot!(test("x-*y"), "x - * y");
         k9::snapshot!(test("x* -y"), "x * (neg y)");
         k9::snapshot!(test("x*(-y)"), "x * ((neg y))");
+        k9::snapshot!(test("-(x)"), "(neg (x))");
     }
 
     #[test]
