@@ -3,24 +3,22 @@ use std::num::NonZeroUsize;
 use crate::helpers::*;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take, take_while, take_while1},
-    character::complete::{char, line_ending, space0, space1},
-    combinator::{eof, map, opt, peek, recognize, verify},
-    multi::{many0, many1},
-    sequence::tuple,
-    IResult, InputLength, InputTake, Parser,
+    bytes::complete::{take, take_while1},
+    combinator::{eof, map, map_opt, opt, verify},
+    multi::many1,
+    IResult, InputLength, InputTake,
 };
 
-use crate::new_tokenizer::{Span, Token, TokenType};
+use crate::new_tokenizer::{LocatedToken, Token};
 
-type ParseResult<'a, 't, R> = IResult<Tokens<'a, 't>, R>;
-type TokenResult<'a, 't> = ParseResult<'a, 't, &'a Token<'t>>;
-type UnitResult<'a, 't> = ParseResult<'a, 't, ()>;
+type ParseResult<'a, R> = IResult<Tokens<'a>, R>;
+type TokenResult<'a> = ParseResult<'a, &'a LocatedToken>;
+type UnitResult<'a> = ParseResult<'a, ()>;
 
 #[derive(Debug, Clone)]
-struct Tokens<'a, 't>(&'a [Token<'t>]);
+struct Tokens<'a>(&'a [LocatedToken]);
 
-impl<'a, 't> nom::InputTake for Tokens<'a, 't> {
+impl<'a> nom::InputTake for Tokens<'a> {
     fn take(&self, count: usize) -> Self {
         Tokens(&self.0[0..count])
     }
@@ -31,8 +29,8 @@ impl<'a, 't> nom::InputTake for Tokens<'a, 't> {
     }
 }
 
-impl<'a, 't> nom::InputTakeAtPosition for Tokens<'a, 't> {
-    type Item = &'a Token<'t>;
+impl<'a> nom::InputTakeAtPosition for Tokens<'a> {
+    type Item = &'a LocatedToken;
 
     fn split_at_position<P, E: nom::error::ParseError<Self>>(
         &self,
@@ -96,23 +94,23 @@ impl<'a, 't> nom::InputTakeAtPosition for Tokens<'a, 't> {
     }
 }
 
-impl<'a, 't> nom::InputLength for Tokens<'a, 't> {
+impl<'a> nom::InputLength for Tokens<'a> {
     fn input_len(&self) -> usize {
         self.0.len()
     }
 }
 
-impl<'a> nom::InputLength for Token<'a> {
+impl nom::InputLength for LocatedToken {
     #[inline]
     fn input_len(&self) -> usize {
         1
     }
 }
 
-impl<'a, 't> nom::InputIter for Tokens<'a, 't> {
-    type Item = &'a Token<'t>;
+impl<'a> nom::InputIter for Tokens<'a> {
+    type Item = &'a LocatedToken;
     type Iter = std::iter::Enumerate<Self::IterElem>;
-    type IterElem = std::slice::Iter<'a, Token<'t>>;
+    type IterElem = std::slice::Iter<'a, LocatedToken>;
 
     fn iter_indices(&self) -> Self::Iter {
         self.0.iter().enumerate()
@@ -140,79 +138,69 @@ impl<'a, 't> nom::InputIter for Tokens<'a, 't> {
     }
 }
 
-fn any_token<'a, 't>(i: Tokens<'a, 't>) -> TokenResult<'a, 't> {
-    map(take(1usize), |tokens: Tokens<'a, 't>| &tokens.0[0])(i)
+fn any_token(i: Tokens) -> TokenResult {
+    map(take(1usize), |tokens: Tokens| &tokens.0[0])(i)
 }
 
-fn token_of_type<'a, 't: 'a>(
-    type_: TokenType,
-) -> impl FnMut(Tokens<'a, 't>) -> TokenResult<'a, 't> {
-    verify(any_token, move |token: &Token<'t>| token.type_ == type_)
+fn identifier(i: Tokens) -> ParseResult<String> {
+    map_opt(any_token, |t: &LocatedToken| match &t.token {
+        Token::Identifier(x) => Some(x.to_string()),
+        _ => None,
+    })(i)
 }
 
-fn token_matching<'a, 't: 'a, 's: 'a>(
-    type_: TokenType,
-    value: &'s str,
-) -> impl FnMut(Tokens<'a, 't>) -> TokenResult<'a, 't> {
-    verify(any_token, move |token: &Token<'t>| {
-        token.type_ == type_ && *token.span.fragment() == value
-    })
+fn token_matching<'a>(token: Token) -> impl FnMut(Tokens<'a>) -> TokenResult<'a> {
+    verify(any_token, move |t: &LocatedToken| t.token == token)
 }
 
-fn ignore_type<'a, 't: 'a>(type_: TokenType) -> impl FnMut(Tokens<'a, 't>) -> UnitResult<'a, 't> {
-    ignore(token_of_type(type_))
+fn skip_token<'a>(token: Token) -> impl FnMut(Tokens<'a>) -> UnitResult {
+    ignore(verify(any_token, move |t: &LocatedToken| t.token == token))
 }
 
-fn maybe_space<'a, 't>(i: Tokens<'a, 't>) -> UnitResult<'a, 't> {
-    ignore(opt(token_of_type(TokenType::Space)))(i)
+fn maybe_space(i: Tokens) -> UnitResult {
+    ignore(opt(skip_token(Token::Space)))(i)
 }
 
-fn expressions<'a, 't>(i: Tokens<'a, 't>) -> ParseResult<'a, 't, Expression<'t>> {
+fn expressions(i: Tokens) -> ParseResult<Expression> {
     map(
-        take_while1(|x: &Token| match x.type_ {
-            TokenType::Identifier => true,
-            TokenType::PunctuationSoup => true,
-            TokenType::NumericLiteral => true,
-            TokenType::OpenParen => true,
-            TokenType::CloseParen => true,
-            TokenType::OpenBracket => true,
-            TokenType::CloseBracket => true,
-            TokenType::Semicolons => true,
-            TokenType::Space => true,
-            TokenType::EqualSign => false,
-            TokenType::Newline => false,
-            TokenType::Indent => false,
-            TokenType::Outdent => false,
+        take_while1(|t: &LocatedToken| match t.token {
+            Token::Identifier(_) => true,
+            Token::PunctuationSoup(_) => true,
+            Token::NumericLiteral(_) => true,
+            Token::OpenParen => true,
+            Token::CloseParen => true,
+            Token::OpenBracket => true,
+            Token::CloseBracket => true,
+            Token::Semicolons(_) => true,
+            Token::Space => true,
+            Token::EqualSign => false,
+            Token::Newline => false,
+            Token::Indent => false,
+            Token::Outdent => false,
         }),
-        |tokens: Tokens<'a, 't>| Vec::from(tokens.0),
+        |tokens: Tokens| Vec::from(tokens.0),
     )(i)
 }
 
-fn assignment_statement<'a, 't>(i: Tokens<'a, 't>) -> ParseResult<'a, 't, Statement<'t>> {
-    let (i, identifier_token) = token_of_type(TokenType::Identifier)(i)?;
+fn assignment_statement(i: Tokens) -> ParseResult<Statement> {
+    let (i, identifier) = identifier(i)?;
     let (i, ()) = maybe_space(i)?;
-    let (i, ()) = ignore_type(TokenType::EqualSign)(i)?;
+    let (i, ()) = skip_token(Token::EqualSign)(i)?;
     let (i, ()) = maybe_space(i)?;
     let (i, expression_tokens) = opt(expressions)(i)?;
-    let (i, ()) = ignore_type(TokenType::Newline)(i)?;
+    let (i, ()) = skip_token(Token::Newline)(i)?;
 
-    if let Ok((i, ())) = ignore_type(TokenType::Indent)(i.clone()) {
+    if let Ok((i, ())) = skip_token(Token::Indent)(i.clone()) {
         let (i, mut block) = statements(i)?;
         if let Some(expression_tokens) = expression_tokens {
             block.insert(0, Statement::Expression(expression_tokens));
         };
-        Ok((
-            i,
-            Statement::CompoundAssignment(identifier_token.span.fragment().to_string(), block),
-        ))
+        Ok((i, Statement::CompoundAssignment(identifier, block)))
     } else {
         if let Some(expression_tokens) = expression_tokens {
             Ok((
                 i,
-                Statement::SimpleAssignment(
-                    identifier_token.span.fragment().to_string(),
-                    expression_tokens,
-                ),
+                Statement::SimpleAssignment(identifier, expression_tokens),
             ))
         } else {
             // TODO: should be a custom error type
@@ -224,31 +212,31 @@ fn assignment_statement<'a, 't>(i: Tokens<'a, 't>) -> ParseResult<'a, 't, Statem
     }
 }
 
-fn expression_statement<'a, 't>(i: Tokens<'a, 't>) -> ParseResult<'a, 't, Statement<'t>> {
+fn expression_statement(i: Tokens) -> ParseResult<Statement> {
     let (i, expressions) = map(expressions, Statement::Expression)(i)?;
-    let (i, ()) = ignore_type(TokenType::Newline)(i)?;
+    let (i, ()) = skip_token(Token::Newline)(i)?;
     Ok((i, expressions))
 }
 
-fn statement<'a, 't>(i: Tokens<'a, 't>) -> ParseResult<'a, 't, Statement<'t>> {
+fn statement(i: Tokens) -> ParseResult<Statement> {
     alt((assignment_statement, expression_statement))(i)
 }
 
 // separated by newlines until either outdent or EOF reached
-fn statements<'a, 't>(i: Tokens<'a, 't>) -> ParseResult<'a, 't, Vec<Statement<'t>>> {
+fn statements(i: Tokens) -> ParseResult<Vec<Statement>> {
     let (i, statements) = many1(statement)(i)?;
-    let (i, ()) = alt((ignore_type(TokenType::Outdent), ignore(eof)))(i)?;
+    let (i, ()) = alt((skip_token(Token::Outdent), ignore(eof)))(i)?;
     Ok((i, statements))
 }
 
-type Block<'a> = Vec<Statement<'a>>;
-type Expression<'a> = Vec<Token<'a>>;
+type Block = Vec<Statement>;
+type Expression = Vec<LocatedToken>;
 
 #[derive(Debug)]
-enum Statement<'a> {
-    SimpleAssignment(String, Expression<'a>),
-    CompoundAssignment(String, Block<'a>),
-    Expression(Expression<'a>),
+enum Statement {
+    SimpleAssignment(String, Expression),
+    CompoundAssignment(String, Block),
+    Expression(Expression),
 }
 
 #[cfg(test)]
@@ -277,14 +265,14 @@ Ok(
             SimpleAssignment(
                 "foo",
                 [
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 6,
                             line: 1,
-                            fragment: "bar",
-                            extra: (),
                         },
-                        type_: Identifier,
+                        token: Identifier(
+                            "bar",
+                        ),
                     },
                 ],
             ),
@@ -318,63 +306,59 @@ Ok(
                     SimpleAssignment(
                         "x",
                         [
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 13,
                                     line: 3,
-                                    fragment: "10",
-                                    extra: (),
                                 },
-                                type_: NumericLiteral,
+                                token: NumericLiteral(
+                                    "10",
+                                ),
                             },
                         ],
                     ),
                     Expression(
                         [
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 18,
                                     line: 4,
-                                    fragment: "x",
-                                    extra: (),
                                 },
-                                type_: Identifier,
+                                token: Identifier(
+                                    "x",
+                                ),
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 19,
                                     line: 4,
-                                    fragment: " ",
-                                    extra: (),
                                 },
-                                type_: Space,
+                                token: Space,
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 20,
                                     line: 4,
-                                    fragment: "*",
-                                    extra: (),
                                 },
-                                type_: PunctuationSoup,
+                                token: PunctuationSoup(
+                                    "*",
+                                ),
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 21,
                                     line: 4,
-                                    fragment: " ",
-                                    extra: (),
                                 },
-                                type_: Space,
+                                token: Space,
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 22,
                                     line: 4,
-                                    fragment: "2",
-                                    extra: (),
                                 },
-                                type_: NumericLiteral,
+                                token: NumericLiteral(
+                                    "2",
+                                ),
                             },
                         ],
                     ),
@@ -410,127 +394,119 @@ Ok(
                 [
                     Expression(
                         [
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 7,
                                     line: 2,
-                                    fragment: "x",
-                                    extra: (),
                                 },
-                                type_: Identifier,
+                                token: Identifier(
+                                    "x",
+                                ),
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 8,
                                     line: 2,
-                                    fragment: " ",
-                                    extra: (),
                                 },
-                                type_: Space,
+                                token: Space,
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 9,
                                     line: 2,
-                                    fragment: "+",
-                                    extra: (),
                                 },
-                                type_: PunctuationSoup,
+                                token: PunctuationSoup(
+                                    "+",
+                                ),
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 10,
                                     line: 2,
-                                    fragment: " ",
-                                    extra: (),
                                 },
-                                type_: Space,
+                                token: Space,
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 11,
                                     line: 2,
-                                    fragment: "y",
-                                    extra: (),
                                 },
-                                type_: Identifier,
+                                token: Identifier(
+                                    "y",
+                                ),
                             },
                         ],
                     ),
                     SimpleAssignment(
                         "x",
                         [
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 19,
                                     line: 3,
-                                    fragment: "10",
-                                    extra: (),
                                 },
-                                type_: NumericLiteral,
+                                token: NumericLiteral(
+                                    "10",
+                                ),
                             },
                         ],
                     ),
                     SimpleAssignment(
                         "y",
                         [
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 28,
                                     line: 4,
-                                    fragment: "20",
-                                    extra: (),
                                 },
-                                type_: NumericLiteral,
+                                token: NumericLiteral(
+                                    "20",
+                                ),
                             },
                         ],
                     ),
                     Expression(
                         [
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 33,
                                     line: 5,
-                                    fragment: "x",
-                                    extra: (),
                                 },
-                                type_: Identifier,
+                                token: Identifier(
+                                    "x",
+                                ),
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 34,
                                     line: 5,
-                                    fragment: " ",
-                                    extra: (),
                                 },
-                                type_: Space,
+                                token: Space,
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 35,
                                     line: 5,
-                                    fragment: "-",
-                                    extra: (),
                                 },
-                                type_: PunctuationSoup,
+                                token: PunctuationSoup(
+                                    "-",
+                                ),
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 36,
                                     line: 5,
-                                    fragment: " ",
-                                    extra: (),
                                 },
-                                type_: Space,
+                                token: Space,
                             },
-                            Token {
-                                span: LocatedSpan {
+                            LocatedToken {
+                                location: Location {
                                     offset: 37,
                                     line: 5,
-                                    fragment: "y",
-                                    extra: (),
                                 },
-                                type_: Identifier,
+                                token: Identifier(
+                                    "y",
+                                ),
                             },
                         ],
                     ),
@@ -572,14 +548,14 @@ Ok(
                                 [
                                     Expression(
                                         [
-                                            Token {
-                                                span: LocatedSpan {
+                                            LocatedToken {
+                                                location: Location {
                                                     offset: 27,
                                                     line: 5,
-                                                    fragment: "10",
-                                                    extra: (),
                                                 },
-                                                type_: NumericLiteral,
+                                                token: NumericLiteral(
+                                                    "10",
+                                                ),
                                             },
                                         ],
                                     ),
@@ -606,77 +582,65 @@ Err(
         Error {
             input: Tokens(
                 [
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 4,
                             line: 1,
-                            fragment: "=",
-                            extra: (),
                         },
-                        type_: EqualSign,
+                        token: EqualSign,
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 5,
                             line: 1,
-                            fragment: " ",
-                            extra: (),
                         },
-                        type_: Space,
+                        token: Space,
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 6,
                             line: 1,
-                            fragment: "bar",
-                            extra: (),
                         },
-                        type_: Identifier,
+                        token: Identifier(
+                            "bar",
+                        ),
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 9,
                             line: 1,
-                            fragment: " ",
-                            extra: (),
                         },
-                        type_: Space,
+                        token: Space,
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 10,
                             line: 1,
-                            fragment: "=",
-                            extra: (),
                         },
-                        type_: EqualSign,
+                        token: EqualSign,
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 11,
                             line: 1,
-                            fragment: " ",
-                            extra: (),
                         },
-                        type_: Space,
+                        token: Space,
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 12,
                             line: 1,
-                            fragment: "baz",
-                            extra: (),
                         },
-                        type_: Identifier,
+                        token: Identifier(
+                            "baz",
+                        ),
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 15,
                             line: 1,
-                            fragment: "",
-                            extra: (),
                         },
-                        type_: Newline,
+                        token: Newline,
                     },
                 ],
             ),
@@ -689,29 +653,25 @@ Err(
 
         k9::snapshot!(
             test("foo ="),
-            r#"
+            "
 Err(
     Error(
         Error {
             input: Tokens(
                 [
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 4,
                             line: 1,
-                            fragment: "=",
-                            extra: (),
                         },
-                        type_: EqualSign,
+                        token: EqualSign,
                     },
-                    Token {
-                        span: LocatedSpan {
+                    LocatedToken {
+                        location: Location {
                             offset: 5,
                             line: 1,
-                            fragment: "",
-                            extra: (),
                         },
-                        type_: Newline,
+                        token: Newline,
                     },
                 ],
             ),
@@ -719,7 +679,7 @@ Err(
         },
     ),
 )
-"#
+"
         );
     }
 }

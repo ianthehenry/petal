@@ -10,91 +10,121 @@ use nom::{
 };
 use nom_locate::LocatedSpan;
 
+#[derive(Debug, Clone)]
+pub struct Location {
+    offset: usize,
+    line: u32,
+}
+
+fn span_location(span: Span) -> Location {
+    Location {
+        offset: span.location_offset(),
+        line: span.location_line(),
+    }
+}
+
 pub type Span<'a> = LocatedSpan<&'a str>;
 
-#[derive(Debug, Eq, Clone)]
-pub struct Token<'a> {
-    pub span: Span<'a>,
-    pub type_: TokenType,
+#[derive(Debug, Clone)]
+pub struct LocatedToken {
+    pub location: Location,
+    pub token: Token,
 }
 
-impl<'a> PartialEq for Token<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        self.span.fragment() == other.span.fragment() && self.type_ == other.type_
+impl LocatedToken {
+    fn new(location: Location, token: Token) -> Self {
+        LocatedToken { location, token }
+    }
+    fn of_span(span: Span, token: Token) -> Self {
+        LocatedToken {
+            location: span_location(span),
+            token,
+        }
+    }
+
+    fn build<F: Fn(&str) -> Token>(f: F) -> impl Fn(Span) -> LocatedToken {
+        move |span: Span| LocatedToken {
+            location: span_location(span),
+            token: f(span.fragment()),
+        }
+    }
+
+    fn build_string<F: Fn(String) -> Token>(f: F) -> impl Fn(Span) -> LocatedToken {
+        move |span: Span| LocatedToken {
+            location: span_location(span),
+            token: f(span.fragment().to_string()),
+        }
+    }
+
+    fn build_const(token: Token) -> impl Fn(Span) -> LocatedToken {
+        move |span: Span| LocatedToken {
+            location: span_location(span),
+            token: token.clone(),
+        }
     }
 }
 
-impl<'a> Token<'a> {
-    fn new(span: Span<'a>, type_: TokenType) -> Self {
-        Token { span, type_ }
-    }
-
-    fn build(type_: TokenType) -> impl Fn(Span<'a>) -> Token<'a> {
-        move |span: Span| Token { span, type_ }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
-pub enum TokenType {
-    Identifier,
-    PunctuationSoup,
-    NumericLiteral,
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub enum Token {
+    Identifier(String),
+    PunctuationSoup(String),
+    NumericLiteral(String),
     EqualSign,
     OpenParen,
     CloseParen,
     OpenBracket,
     CloseBracket,
-    Semicolons,
+    Semicolons(usize),
     Space,
     Newline,
     Indent,
     Outdent,
 }
 
-fn identifier(i: Span) -> IResult<Span, Token> {
+fn identifier(i: Span) -> IResult<Span, LocatedToken> {
     map(
         take_while1(char::is_alphabetic),
-        Token::build(TokenType::Identifier),
+        LocatedToken::build_string(Token::Identifier),
     )(i)
 }
 
-fn numeric_literal(i: Span) -> IResult<Span, Token> {
+fn numeric_literal(i: Span) -> IResult<Span, LocatedToken> {
     map(
         recognize(tuple((opt(char('-')), take_while1(char::is_numeric)))),
-        Token::build(TokenType::NumericLiteral),
+        LocatedToken::build_string(Token::NumericLiteral),
     )(i)
 }
 
-fn punctuation_soup<'a>(i: Span<'a>) -> IResult<Span<'a>, Token<'a>> {
+fn punctuation_soup(i: Span) -> IResult<Span, LocatedToken> {
     fn is_operator_punctuation(c: char) -> bool {
         !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];".contains(c))
     }
     map(
         verify(take_while1(is_operator_punctuation), |s: &Span| **s != "="),
-        Token::build(TokenType::PunctuationSoup),
+        LocatedToken::build_string(Token::PunctuationSoup),
     )(i)
 }
 
-fn semicolons(i: Span) -> IResult<Span, Token> {
+fn semicolons(i: Span) -> IResult<Span, LocatedToken> {
     map(
         take_while1(|c| c == ';'),
-        Token::build(TokenType::Semicolons),
+        LocatedToken::build(|x| Token::Semicolons(x.len())),
     )(i)
 }
 
-fn token(i: Span) -> IResult<Span, Token> {
-    use TokenType::*;
+fn token(i: Span) -> IResult<Span, LocatedToken> {
+    use Token::*;
     alt((
         identifier,
         numeric_literal,
         punctuation_soup,
         semicolons,
-        map(tag("("), Token::build(OpenParen)),
-        map(tag(")"), Token::build(CloseParen)),
-        map(tag("["), Token::build(OpenBracket)),
-        map(tag("]"), Token::build(CloseBracket)),
-        map(tag("="), Token::build(EqualSign)),
-        map(space1, Token::build(Space)),
+        map(tag("("), LocatedToken::build_const(OpenParen)),
+        map(tag(")"), LocatedToken::build_const(CloseParen)),
+        map(tag("["), LocatedToken::build_const(OpenBracket)),
+        map(tag("]"), LocatedToken::build_const(CloseBracket)),
+        map(tag("="), LocatedToken::build_const(EqualSign)),
+        map(space1, LocatedToken::build_const(Space)),
     ))(i)
 }
 
@@ -106,7 +136,7 @@ fn newline(i: Span) -> IResult<Span, ()> {
     ignore(line_ending)(i)
 }
 
-pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
+pub fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
     let mut result = Vec::new();
     let mut indentation_stack: Vec<usize> = vec![0];
 
@@ -129,7 +159,7 @@ pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
         let previous_indentation = *indentation_stack.last().unwrap();
         if this_indentation > previous_indentation {
             indentation_stack.push(this_indentation);
-            result.push(Token::new(spaces, TokenType::Indent));
+            result.push(LocatedToken::of_span(spaces, Token::Indent));
         } else if this_indentation < previous_indentation {
             loop {
                 let candidate = *indentation_stack.last().unwrap();
@@ -140,7 +170,7 @@ pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
                         nom::error::ErrorKind::Fail,
                     )));
                 } else if candidate > this_indentation {
-                    result.push(Token::new(spaces.clone(), TokenType::Outdent));
+                    result.push(LocatedToken::of_span(spaces.clone(), Token::Outdent));
                     indentation_stack.pop();
                 } else if candidate == this_indentation {
                     break;
@@ -152,13 +182,16 @@ pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
 
         // we always add a newline, even if it isn't present in the source
         let (i, eol) = recognize(eol)(i)?;
-        result.push(Token::new(eol, TokenType::Newline));
+        result.push(LocatedToken::of_span(eol, Token::Newline));
         remaining = i;
     }
 
-    for i in 0..(indentation_stack.len() - 1) {
-        let eof = result.last().unwrap().span;
-        result.push(Token::new(eof, TokenType::Outdent))
+    for _ in 0..(indentation_stack.len() - 1) {
+        // by putting this inside the loop we know the unwrap is safe, since we
+        // can't add anything to the indentation stack without also adding
+        // something to the result vector
+        let eof = result.last().unwrap().location.clone();
+        result.push(LocatedToken::new(eof, Token::Outdent))
     }
 
     Ok((remaining, result))
@@ -166,9 +199,9 @@ pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
 
 // TODO: comments, string literals, etc. certain types of comments are actually
 // significant...
-pub fn tokenize(i: &str) -> Vec<Token> {
+pub fn tokenize(i: &str) -> Vec<LocatedToken> {
     let i = LocatedSpan::new(i);
-    let (remaining, tokens) = parse_lines(i).unwrap();
+    let (remaining, tokens) = tokenize_lines(i).unwrap();
     if !remaining.is_empty() {
         panic!("tokenize error, remaining: {:?}", remaining);
     }
@@ -179,20 +212,30 @@ pub fn tokenize(i: &str) -> Vec<Token> {
 mod tests {
     use super::*;
 
-    fn show_token(token: &Token) -> String {
-        use TokenType::*;
-        match token.type_ {
+    fn show_located_token(located_token: &LocatedToken) -> String {
+        use Token::*;
+        match &located_token.token {
             Space => "␠".to_string(),
             Newline => "␤".to_string(),
             Indent => "→".to_string(),
             Outdent => "←".to_string(),
-            _ => token.span.fragment().to_string(),
+            EqualSign => "=".to_string(),
+            OpenParen => "(".to_string(),
+            CloseParen => ")".to_string(),
+            OpenBracket => "[".to_string(),
+            CloseBracket => "]".to_string(),
+            Semicolons(count) => "(".repeat(*count),
+            Identifier(s) | PunctuationSoup(s) | NumericLiteral(s) => s.to_string(),
         }
     }
 
     fn test(input: &str) -> String {
         let tokens = tokenize(input);
-        tokens.iter().map(show_token).collect::<Vec<_>>().join(" ")
+        tokens
+            .iter()
+            .map(show_located_token)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[test]
@@ -248,7 +291,7 @@ g
     #[test]
     fn illegal_outdent() {
         k9::snapshot!(
-            parse_lines(LocatedSpan::new(
+            tokenize_lines(LocatedSpan::new(
                 "
 a
   b
