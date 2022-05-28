@@ -1,3 +1,4 @@
+use crate::helpers::*;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
@@ -5,18 +6,22 @@ use nom::{
     combinator::{eof, map, opt, recognize, verify},
     multi::many0,
     sequence::tuple,
-    IResult, Parser,
+    IResult,
 };
 use nom_locate::LocatedSpan;
 
-type Span<'a> = LocatedSpan<&'a str>;
+pub type Span<'a> = LocatedSpan<&'a str>;
 
-#[derive(Debug, PartialEq, Clone)]
-// TODO: comments, string literals, etc. certain types of comments are actually
-// significant...
+#[derive(Debug, Eq, Clone)]
 pub struct Token<'a> {
-    span: Span<'a>,
-    type_: TokenType,
+    pub span: Span<'a>,
+    pub type_: TokenType,
+}
+
+impl<'a> PartialEq for Token<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.span.fragment() == other.span.fragment() && self.type_ == other.type_
+    }
 }
 
 impl<'a> Token<'a> {
@@ -29,7 +34,7 @@ impl<'a> Token<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum TokenType {
     Identifier,
     PunctuationSoup,
@@ -145,36 +150,22 @@ pub fn parse_lines(i: Span) -> IResult<Span, Vec<Token>> {
         let (i, tokens) = many0(token)(i)?;
         result.extend(tokens);
 
-        if let Ok((i, nl)) = recognize(newline)(i) {
-            result.push(Token::new(nl, TokenType::Newline));
-            remaining = i;
-        } else {
-            let (i, ()) = ignore(eof)(i)?;
-            remaining = i;
-        }
+        // we always add a newline, even if it isn't present in the source
+        let (i, eol) = recognize(eol)(i)?;
+        result.push(Token::new(eol, TokenType::Newline));
+        remaining = i;
+    }
+
+    for i in 0..(indentation_stack.len() - 1) {
+        let eof = result.last().unwrap().span;
+        result.push(Token::new(eof, TokenType::Outdent))
     }
 
     Ok((remaining, result))
 }
 
-fn replace<I, O1, O2, E, F>(mut parser: F, value: O2) -> impl FnMut(I) -> IResult<I, O2, E>
-where
-    O2: Clone,
-    F: Parser<I, O1, E>,
-{
-    move |input: I| {
-        let (input, _) = parser.parse(input)?;
-        Ok((input, value.clone()))
-    }
-}
-
-fn ignore<I, O, E, F>(parser: F) -> impl FnMut(I) -> IResult<I, (), E>
-where
-    F: Parser<I, O, E>,
-{
-    replace(parser, ())
-}
-
+// TODO: comments, string literals, etc. certain types of comments are actually
+// significant...
 pub fn tokenize(i: &str) -> Vec<Token> {
     let i = LocatedSpan::new(i);
     let (remaining, tokens) = parse_lines(i).unwrap();
@@ -231,10 +222,11 @@ x = 10
         );
     }
 
-    // TODO: this shouldn't be allowed. this is an illegal outdent.
-    // it should keep a stack of the current indentation and only allow
-    // it to outdent to a particular past level of indentation. it should
-    // also emit multiple outdents when outdenting across multiple levels.
+    #[test]
+    fn always_ends_with_newline() {
+        k9::snapshot!(test("x=10"), "x = 10 ␤");
+    }
+
     #[test]
     fn indentation() {
         k9::snapshot!(
