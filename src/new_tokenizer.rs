@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::helpers::*;
 use nom::{
     branch::alt,
@@ -157,25 +159,29 @@ pub fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
         let (i, spaces) = recognize(space0)(i)?;
         let this_indentation = spaces.len();
         let previous_indentation = *indentation_stack.last().unwrap();
-        if this_indentation > previous_indentation {
-            indentation_stack.push(this_indentation);
-            result.push(LocatedToken::of_span(spaces, Token::Indent));
-        } else if this_indentation < previous_indentation {
-            loop {
-                let candidate = *indentation_stack.last().unwrap();
-                if candidate < this_indentation {
-                    // TODO: this should return a custom error for an illegal outdent
-                    return Err(nom::Err::Error(nom::error::Error::<Span>::new(
-                        i,
-                        nom::error::ErrorKind::Fail,
-                    )));
-                } else if candidate > this_indentation {
-                    result.push(LocatedToken::of_span(spaces.clone(), Token::Outdent));
-                    indentation_stack.pop();
-                } else if candidate == this_indentation {
-                    break;
-                }
+        match this_indentation.cmp(&previous_indentation) {
+            Ordering::Greater => {
+                indentation_stack.push(this_indentation);
+                result.push(LocatedToken::of_span(spaces, Token::Indent));
             }
+            Ordering::Less => loop {
+                let candidate = *indentation_stack.last().unwrap();
+                match candidate.cmp(&this_indentation) {
+                    Ordering::Less => {
+                        // TODO: this should return a custom error for an illegal outdent
+                        return Err(nom::Err::Error(nom::error::Error::<Span>::new(
+                            i,
+                            nom::error::ErrorKind::Fail,
+                        )));
+                    }
+                    Ordering::Greater => {
+                        result.push(LocatedToken::of_span(spaces, Token::Outdent));
+                        indentation_stack.pop();
+                    }
+                    Ordering::Equal => break,
+                }
+            },
+            Ordering::Equal => (),
         }
         let (i, tokens) = many0(token)(i)?;
         result.extend(tokens);
