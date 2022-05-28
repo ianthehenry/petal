@@ -83,6 +83,25 @@ pub enum Token {
     Outdent,
 }
 
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use Token::*;
+        match self {
+            Space => write!(f, "␠"),
+            Newline => write!(f, "␤"),
+            Indent => write!(f, "→"),
+            Outdent => write!(f, "←"),
+            EqualSign => write!(f, "="),
+            OpenParen => write!(f, "("),
+            CloseParen => write!(f, ")"),
+            OpenBracket => write!(f, "["),
+            CloseBracket => write!(f, "]"),
+            Semicolons(count) => write!(f, "{}", "(".repeat(*count)),
+            Identifier(s) | PunctuationSoup(s) | NumericLiteral(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 fn identifier(i: Span) -> IResult<Span, LocatedToken> {
     map(
         take_while1(char::is_alphabetic),
@@ -218,28 +237,11 @@ pub fn tokenize(i: &str) -> Vec<LocatedToken> {
 mod tests {
     use super::*;
 
-    fn show_located_token(located_token: &LocatedToken) -> String {
-        use Token::*;
-        match &located_token.token {
-            Space => "␠".to_string(),
-            Newline => "␤".to_string(),
-            Indent => "→".to_string(),
-            Outdent => "←".to_string(),
-            EqualSign => "=".to_string(),
-            OpenParen => "(".to_string(),
-            CloseParen => ")".to_string(),
-            OpenBracket => "[".to_string(),
-            CloseBracket => "]".to_string(),
-            Semicolons(count) => "(".repeat(*count),
-            Identifier(s) | PunctuationSoup(s) | NumericLiteral(s) => s.to_string(),
-        }
-    }
-
     fn test(input: &str) -> String {
         let tokens = tokenize(input);
         tokens
             .iter()
-            .map(show_located_token)
+            .map(|t: &LocatedToken| format!("{}", t.token))
             .collect::<Vec<_>>()
             .join(" ")
     }

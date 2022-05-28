@@ -18,6 +18,12 @@ type UnitResult<'a> = ParseResult<'a, ()>;
 #[derive(Debug, Clone)]
 struct Tokens<'a>(&'a [LocatedToken]);
 
+impl<'a> Tokens<'a> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl<'a> nom::InputTake for Tokens<'a> {
     fn take(&self, count: usize) -> Self {
         Tokens(&self.0[0..count])
@@ -245,42 +251,46 @@ mod tests {
 
     use super::*;
 
-    fn test(input: &'static str) -> String {
+    fn show_expression(expression: &Expression) -> String {
+        expression
+            .iter()
+            .map(|t: &LocatedToken| format!("{}", t.token))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn show_block(block: &Block) -> String {
+        block
+            .iter()
+            .map(show_statement)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    fn show_statement(statement: &Statement) -> String {
+        match statement {
+            Statement::SimpleAssignment(id, expr) => format!("{}={}", id, show_expression(expr)),
+            Statement::CompoundAssignment(id, block) => format!("{}={{{}}}", id, show_block(block)),
+            Statement::Expression(expr) => show_expression(expr),
+        }
+    }
+
+    fn test(input: &str) -> String {
         let tokens = tokenize(input);
         let tokens = Tokens(&tokens);
-        format!("{:#?}", statements(tokens))
+
+        match statements(tokens) {
+            Ok((remaining, block)) => {
+                assert!(remaining.is_empty(), "parse was not total");
+                show_block(&block)
+            }
+            Err(e) => format!("{}", e),
+        }
     }
 
     #[test]
     fn simple_assignment() {
-        k9::snapshot!(
-            test("foo = bar"),
-            r#"
-Ok(
-    (
-        Tokens(
-            [],
-        ),
-        [
-            SimpleAssignment(
-                "foo",
-                [
-                    LocatedToken {
-                        location: Location {
-                            offset: 6,
-                            line: 1,
-                        },
-                        token: Identifier(
-                            "bar",
-                        ),
-                    },
-                ],
-            ),
-        ],
-    ),
-)
-"#
-        );
+        k9::snapshot!(test("foo = bar"), "foo=bar");
     }
 
     #[test]
@@ -293,81 +303,7 @@ foo =
   x * 2
 "
             ),
-            r#"
-Ok(
-    (
-        Tokens(
-            [],
-        ),
-        [
-            CompoundAssignment(
-                "foo",
-                [
-                    SimpleAssignment(
-                        "x",
-                        [
-                            LocatedToken {
-                                location: Location {
-                                    offset: 13,
-                                    line: 3,
-                                },
-                                token: NumericLiteral(
-                                    "10",
-                                ),
-                            },
-                        ],
-                    ),
-                    Expression(
-                        [
-                            LocatedToken {
-                                location: Location {
-                                    offset: 18,
-                                    line: 4,
-                                },
-                                token: Identifier(
-                                    "x",
-                                ),
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 19,
-                                    line: 4,
-                                },
-                                token: Space,
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 20,
-                                    line: 4,
-                                },
-                                token: PunctuationSoup(
-                                    "*",
-                                ),
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 21,
-                                    line: 4,
-                                },
-                                token: Space,
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 22,
-                                    line: 4,
-                                },
-                                token: NumericLiteral(
-                                    "2",
-                                ),
-                            },
-                        ],
-                    ),
-                ],
-            ),
-        ],
-    ),
-)
-"#
+            "foo={x=10; x ␠ * ␠ 2}"
         );
     }
 
@@ -382,140 +318,7 @@ foo = x + y
   x - y
 "
             ),
-            r#"
-Ok(
-    (
-        Tokens(
-            [],
-        ),
-        [
-            CompoundAssignment(
-                "foo",
-                [
-                    Expression(
-                        [
-                            LocatedToken {
-                                location: Location {
-                                    offset: 7,
-                                    line: 2,
-                                },
-                                token: Identifier(
-                                    "x",
-                                ),
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 8,
-                                    line: 2,
-                                },
-                                token: Space,
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 9,
-                                    line: 2,
-                                },
-                                token: PunctuationSoup(
-                                    "+",
-                                ),
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 10,
-                                    line: 2,
-                                },
-                                token: Space,
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 11,
-                                    line: 2,
-                                },
-                                token: Identifier(
-                                    "y",
-                                ),
-                            },
-                        ],
-                    ),
-                    SimpleAssignment(
-                        "x",
-                        [
-                            LocatedToken {
-                                location: Location {
-                                    offset: 19,
-                                    line: 3,
-                                },
-                                token: NumericLiteral(
-                                    "10",
-                                ),
-                            },
-                        ],
-                    ),
-                    SimpleAssignment(
-                        "y",
-                        [
-                            LocatedToken {
-                                location: Location {
-                                    offset: 28,
-                                    line: 4,
-                                },
-                                token: NumericLiteral(
-                                    "20",
-                                ),
-                            },
-                        ],
-                    ),
-                    Expression(
-                        [
-                            LocatedToken {
-                                location: Location {
-                                    offset: 33,
-                                    line: 5,
-                                },
-                                token: Identifier(
-                                    "x",
-                                ),
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 34,
-                                    line: 5,
-                                },
-                                token: Space,
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 35,
-                                    line: 5,
-                                },
-                                token: PunctuationSoup(
-                                    "-",
-                                ),
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 36,
-                                    line: 5,
-                                },
-                                token: Space,
-                            },
-                            LocatedToken {
-                                location: Location {
-                                    offset: 37,
-                                    line: 5,
-                                },
-                                token: Identifier(
-                                    "y",
-                                ),
-                            },
-                        ],
-                    ),
-                ],
-            ),
-        ],
-    ),
-)
-"#
+            "foo={x ␠ + ␠ y; x=10; y=20; x ␠ - ␠ y}"
         );
     }
 
@@ -530,45 +333,7 @@ foo =
       10
 "
             ),
-            r#"
-Ok(
-    (
-        Tokens(
-            [],
-        ),
-        [
-            CompoundAssignment(
-                "foo",
-                [
-                    CompoundAssignment(
-                        "x",
-                        [
-                            CompoundAssignment(
-                                "y",
-                                [
-                                    Expression(
-                                        [
-                                            LocatedToken {
-                                                location: Location {
-                                                    offset: 27,
-                                                    line: 5,
-                                                },
-                                                token: NumericLiteral(
-                                                    "10",
-                                                ),
-                                            },
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-        ],
-    ),
-)
-"#
+            "foo={x={y={10}}}"
         );
     }
 
@@ -576,110 +341,12 @@ Ok(
     fn parse_errors() {
         k9::snapshot!(
             test("foo = bar = baz"),
-            r#"
-Err(
-    Error(
-        Error {
-            input: Tokens(
-                [
-                    LocatedToken {
-                        location: Location {
-                            offset: 4,
-                            line: 1,
-                        },
-                        token: EqualSign,
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 5,
-                            line: 1,
-                        },
-                        token: Space,
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 6,
-                            line: 1,
-                        },
-                        token: Identifier(
-                            "bar",
-                        ),
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 9,
-                            line: 1,
-                        },
-                        token: Space,
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 10,
-                            line: 1,
-                        },
-                        token: EqualSign,
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 11,
-                            line: 1,
-                        },
-                        token: Space,
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 12,
-                            line: 1,
-                        },
-                        token: Identifier(
-                            "baz",
-                        ),
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 15,
-                            line: 1,
-                        },
-                        token: Newline,
-                    },
-                ],
-            ),
-            code: Verify,
-        },
-    ),
-)
-"#
+            r#"Parsing Error: Error { input: Tokens([LocatedToken { location: Location { offset: 4, line: 1 }, token: EqualSign }, LocatedToken { location: Location { offset: 5, line: 1 }, token: Space }, LocatedToken { location: Location { offset: 6, line: 1 }, token: Identifier("bar") }, LocatedToken { location: Location { offset: 9, line: 1 }, token: Space }, LocatedToken { location: Location { offset: 10, line: 1 }, token: EqualSign }, LocatedToken { location: Location { offset: 11, line: 1 }, token: Space }, LocatedToken { location: Location { offset: 12, line: 1 }, token: Identifier("baz") }, LocatedToken { location: Location { offset: 15, line: 1 }, token: Newline }]), code: Verify }"#
         );
 
         k9::snapshot!(
             test("foo ="),
-            "
-Err(
-    Error(
-        Error {
-            input: Tokens(
-                [
-                    LocatedToken {
-                        location: Location {
-                            offset: 4,
-                            line: 1,
-                        },
-                        token: EqualSign,
-                    },
-                    LocatedToken {
-                        location: Location {
-                            offset: 5,
-                            line: 1,
-                        },
-                        token: Newline,
-                    },
-                ],
-            ),
-            code: Verify,
-        },
-    ),
-)
-"
+            "Parsing Error: Error { input: Tokens([LocatedToken { location: Location { offset: 4, line: 1 }, token: EqualSign }, LocatedToken { location: Location { offset: 5, line: 1 }, token: Newline }]), code: Verify }"
         );
     }
 }
