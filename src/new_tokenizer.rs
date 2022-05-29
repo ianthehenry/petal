@@ -185,6 +185,7 @@ pub fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
         let (i, spaces) = recognize(space0)(i)?;
         let this_indentation = spaces.len();
         let previous_indentation = *indentation_stack.last().unwrap();
+        // TODO: this shouldn't push indent/outdent for blank lines
         match this_indentation.cmp(&previous_indentation) {
             Ordering::Greater => {
                 indentation_stack.push(this_indentation);
@@ -288,6 +289,27 @@ x = 10
     #[test]
     fn always_ends_with_newline() {
         k9::snapshot!(test("x=10"), "x = 10 ␤");
+    }
+
+    #[test]
+    fn multiple_newlines_collapse() {
+        k9::snapshot!(
+            test(
+                "
+
+
+x
+
+
+y
+
+
+
+
+"
+            ),
+            "x ␤ y ␤"
+        );
     }
 
     #[test]
