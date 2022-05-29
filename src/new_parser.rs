@@ -1,11 +1,13 @@
+use core::fmt;
 use std::num::NonZeroUsize;
 
 use crate::helpers::*;
 use nom::{
     branch::alt,
-    bytes::complete::{take, take_while1},
+    bytes::complete::take,
     combinator::{eof, map, map_opt, opt, verify},
-    multi::many1,
+    multi::{many0, many1},
+    sequence::delimited,
     IResult, InputLength, InputTake,
 };
 
@@ -155,83 +157,173 @@ fn identifier(i: Tokens) -> ParseResult<String> {
     })(i)
 }
 
+fn numeric_literal(i: Tokens) -> ParseResult<String> {
+    map_opt(any_token, |t: &LocatedToken| match &t.token {
+        Token::NumericLiteral(x) => Some(x.to_string()),
+        _ => None,
+    })(i)
+}
+
+fn punctuation_soup(i: Tokens) -> ParseResult<String> {
+    map_opt(any_token, |t: &LocatedToken| match &t.token {
+        Token::PunctuationSoup(x) => Some(x.to_string()),
+        _ => None,
+    })(i)
+}
+
+fn semicolons(i: Tokens) -> ParseResult<usize> {
+    map_opt(any_token, |t: &LocatedToken| match &t.token {
+        Token::Semicolons(x) => Some(*x),
+        _ => None,
+    })(i)
+}
+
+fn match_token<'a>(token: Token) -> impl FnMut(Tokens<'a>) -> TokenResult {
+    verify(any_token, move |t: &LocatedToken| t.token == token)
+}
+
 fn skip_token<'a>(token: Token) -> impl FnMut(Tokens<'a>) -> UnitResult {
-    ignore(verify(any_token, move |t: &LocatedToken| t.token == token))
+    ignore(match_token(token))
 }
 
 fn maybe_space(i: Tokens) -> UnitResult {
     ignore(opt(skip_token(Token::Space)))(i)
 }
 
-fn expressions(i: Tokens) -> ParseResult<Expression> {
-    map(
-        take_while1(|t: &LocatedToken| match t.token {
-            Token::Identifier(_) => true,
-            Token::PunctuationSoup(_) => true,
-            Token::NumericLiteral(_) => true,
-            Token::OpenParen => true,
-            Token::CloseParen => true,
-            Token::OpenBracket => true,
-            Token::CloseBracket => true,
-            Token::Semicolons(_) => true,
-            Token::Space => true,
-            Token::EqualSign => false,
-            Token::Newline => false,
-            Token::Indent => false,
-            Token::Outdent => false,
-        }),
-        |tokens: Tokens| Vec::from(tokens.0),
-    )(i)
+// We go through two passes. First we create terms, which do not know how to
+// split sequences of punctuation characters into individual identifier tokens,
+// and which preserve spaces. The next pass is a treewalk that uses currently
+// defined operators to split punctuation soup into individual identifier
+// tokens, and to disambiguate unary negation from subtraction.
+#[derive(Debug, PartialEq, Clone)]
+pub enum SoupyTerm {
+    Identifier(String),
+    PunctuationSoup(String),
+    NumericLiteral(String),
+    Parens(Vec<SoupyTerm>),
+    Brackets(Vec<SoupyTerm>),
+    Semicolons(usize),
+    Space,
 }
 
-fn assignment_statement(i: Tokens) -> ParseResult<Statement> {
-    let (i, identifier) = identifier(i)?;
-    let (i, ()) = maybe_space(i)?;
-    let (i, ()) = skip_token(Token::EqualSign)(i)?;
-    let (i, ()) = maybe_space(i)?;
-    let (i, expression_tokens) = opt(expressions)(i)?;
-    let (i, ()) = skip_token(Token::Newline)(i)?;
+impl fmt::Display for SoupyTerm {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn listed(terms: &[SoupyTerm], f: &mut fmt::Formatter) -> fmt::Result {
+            let mut first = true;
+            for term in terms {
+                if first {
+                    first = false;
+                } else {
+                    write!(f, " ")?;
+                }
+                write!(f, "{}", term)?;
+            }
+            Ok(())
+        }
 
-    if let Ok((i, ())) = skip_token(Token::Indent)(i.clone()) {
-        let (i, mut block) = statements(i)?;
-        if let Some(expression_tokens) = expression_tokens {
-            block.insert(0, Statement::Expression(expression_tokens));
-        };
-        Ok((i, Statement::CompoundAssignment(identifier, block)))
-    } else {
-        if let Some(expression_tokens) = expression_tokens {
-            Ok((
-                i,
-                Statement::SimpleAssignment(identifier, expression_tokens),
-            ))
-        } else {
-            // TODO: should be a custom error type
-            Err(nom::Err::Error(nom::error::Error::new(
-                i,
-                nom::error::ErrorKind::Fail,
-            )))
+        use SoupyTerm::*;
+        match self {
+            Parens(terms) => {
+                write!(f, "(")?;
+                listed(terms, f)?;
+                write!(f, ")")
+            }
+            Brackets(terms) => {
+                write!(f, "[")?;
+                listed(terms, f)?;
+                write!(f, "]")
+            }
+            Space => write!(f, "␠"),
+            Semicolons(count) => write!(f, "{}", ";".repeat(*count)),
+            Identifier(s) | PunctuationSoup(s) | NumericLiteral(s) => write!(f, "{}", s),
         }
     }
 }
 
-fn expression_statement(i: Tokens) -> ParseResult<Statement> {
-    let (i, expressions) = map(expressions, Statement::Expression)(i)?;
-    let (i, ()) = skip_token(Token::Newline)(i)?;
-    Ok((i, expressions))
+// TODO: theoretically this should allow indent/outdent so that you could write
+// expressions like:
+//
+//     x = (1 +
+//          2)
+//
+// And replace newlines with spaces and stuff.
+fn inner_expressions(i: Tokens) -> ParseResult<Expression<SoupyTerm>> {
+    many0(term)(i)
 }
 
-fn statement(i: Tokens) -> ParseResult<Statement> {
+fn term(i: Tokens) -> ParseResult<SoupyTerm> {
+    alt((
+        map(identifier, SoupyTerm::Identifier),
+        map(numeric_literal, SoupyTerm::NumericLiteral),
+        map(punctuation_soup, SoupyTerm::PunctuationSoup),
+        map(semicolons, SoupyTerm::Semicolons),
+        replace(match_token(Token::Space), SoupyTerm::Space),
+        map(
+            delimited(
+                match_token(Token::OpenParen),
+                inner_expressions,
+                match_token(Token::CloseParen),
+            ),
+            SoupyTerm::Parens,
+        ),
+        map(
+            delimited(
+                match_token(Token::OpenBracket),
+                inner_expressions,
+                match_token(Token::CloseBracket),
+            ),
+            SoupyTerm::Brackets,
+        ),
+    ))(i)
+}
+
+fn expression(i: Tokens) -> ParseResult<Expression<SoupyTerm>> {
+    many1(term)(i)
+}
+
+fn assignment_statement(i: Tokens) -> ParseResult<Statement<SoupyTerm>> {
+    let (i, identifier) = identifier(i)?;
+    let (i, ()) = maybe_space(i)?;
+    let (i, ()) = skip_token(Token::EqualSign)(i)?;
+    let (i, ()) = maybe_space(i)?;
+    let (i, expression) = opt(expression)(i)?;
+    let (i, ()) = skip_token(Token::Newline)(i)?;
+
+    if let Ok((i, ())) = skip_token(Token::Indent)(i.clone()) {
+        let (i, mut block) = statements(i)?;
+        if let Some(expression) = expression {
+            block.insert(0, Statement::Expression(expression));
+        };
+        Ok((i, Statement::CompoundAssignment(identifier, block)))
+    } else if let Some(expression) = expression {
+        Ok((i, Statement::SimpleAssignment(identifier, expression)))
+    } else {
+        // TODO: should be a custom error type
+        Err(nom::Err::Error(nom::error::Error::new(
+            i,
+            nom::error::ErrorKind::Fail,
+        )))
+    }
+}
+
+fn expression_statement(i: Tokens) -> ParseResult<Statement<SoupyTerm>> {
+    let (i, expression) = map(expression, Statement::Expression)(i)?;
+    let (i, ()) = skip_token(Token::Newline)(i)?;
+    Ok((i, expression))
+}
+
+fn statement(i: Tokens) -> ParseResult<Statement<SoupyTerm>> {
     alt((assignment_statement, expression_statement))(i)
 }
 
 // separated by newlines until either outdent or EOF reached
-fn statements(i: Tokens) -> ParseResult<Vec<Statement>> {
+fn statements(i: Tokens) -> ParseResult<Vec<Statement<SoupyTerm>>> {
     let (i, statements) = many1(statement)(i)?;
     let (i, ()) = alt((skip_token(Token::Outdent), ignore(eof)))(i)?;
     Ok((i, statements))
 }
 
-pub fn parse_tokens(tokens: Vec<LocatedToken>) -> Result<Vec<Statement>, String> {
+pub fn parse_tokens(tokens: Vec<LocatedToken>) -> Result<Vec<Statement<SoupyTerm>>, String> {
     let tokens = Tokens(&tokens);
 
     match statements(tokens) {
@@ -246,14 +338,14 @@ pub fn parse_tokens(tokens: Vec<LocatedToken>) -> Result<Vec<Statement>, String>
     }
 }
 
-type Block = Vec<Statement>;
-type Expression = Vec<LocatedToken>;
+type Block<T> = Vec<Statement<T>>;
+type Expression<T> = Vec<T>;
 
 #[derive(Debug)]
-pub enum Statement {
-    SimpleAssignment(String, Expression),
-    CompoundAssignment(String, Block),
-    Expression(Expression),
+pub enum Statement<T> {
+    SimpleAssignment(String, Expression<T>),
+    CompoundAssignment(String, Block<T>),
+    Expression(Expression<T>),
 }
 
 #[cfg(test)]
@@ -262,15 +354,15 @@ mod tests {
 
     use super::*;
 
-    fn show_expression(expression: &Expression) -> String {
+    fn show_expression(expression: &Expression<SoupyTerm>) -> String {
         expression
             .iter()
-            .map(|t: &LocatedToken| format!("{}", t.token))
+            .map(|t: &SoupyTerm| format!("{}", t))
             .collect::<Vec<_>>()
             .join(" ")
     }
 
-    fn show_block(block: &Block) -> String {
+    fn show_block(block: &Block<SoupyTerm>) -> String {
         block
             .iter()
             .map(show_statement)
@@ -278,7 +370,7 @@ mod tests {
             .join("; ")
     }
 
-    fn show_statement(statement: &Statement) -> String {
+    fn show_statement(statement: &Statement<SoupyTerm>) -> String {
         match statement {
             Statement::SimpleAssignment(id, expr) => format!("{}={}", id, show_expression(expr)),
             Statement::CompoundAssignment(id, block) => format!("{}={{{}}}", id, show_block(block)),
