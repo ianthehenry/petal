@@ -96,7 +96,7 @@ impl std::fmt::Display for Token {
             CloseParen => write!(f, ")"),
             OpenBracket => write!(f, "["),
             CloseBracket => write!(f, "]"),
-            Semicolons(count) => write!(f, "{}", "(".repeat(*count)),
+            Semicolons(count) => write!(f, "{}", ";".repeat(*count)),
             Identifier(s) | PunctuationSoup(s) | NumericLiteral(s) => write!(f, "{}", s),
         }
     }
