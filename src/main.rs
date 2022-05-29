@@ -1,4 +1,4 @@
-use dim::{new_parser, new_tokenizer, old_tokenizer, pos_parser};
+use dim_syntax::{new_parser, new_tokenizer, old_tokenizer, pos_parser};
 use std::{fs, path::PathBuf};
 use structopt::StructOpt;
 

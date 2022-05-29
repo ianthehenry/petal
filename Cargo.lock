@@ -91,11 +91,18 @@ checksum = "0e25ea47919b1560c4e3b7fe0aaab9becf5b84a10325ddf7db0f0ba5e1026499"
 name = "dim"
 version = "0.1.0"
 dependencies = [
+ "dim_syntax",
  "k9",
- "nom",
- "nom_locate",
  "rug",
  "structopt",
+]
+
+[[package]]
+name = "dim_syntax"
+version = "0.1.0"
+dependencies = [
+ "nom",
+ "nom_locate",
 ]
 
 [[package]]

@@ -1,12 +1,11 @@
 [package]
-name = "dim"
+name = "dim_syntax"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rug = "1.15.0"
-structopt = "0.3.26"
-dim_syntax = { path = "dim_syntax" }
+nom = "7.1.1"
+nom_locate = "4.0.0"
 
 [dev-dependencies]
 k9 = {path = "/Users/ian/src/k9/k9"}
