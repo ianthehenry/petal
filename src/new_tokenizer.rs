@@ -129,7 +129,7 @@ fn numeric_literal(i: Span) -> IResult<Span, LocatedToken> {
 
 fn punctuation_soup(i: Span) -> IResult<Span, LocatedToken> {
     fn is_operator_punctuation(c: char) -> bool {
-        !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];".contains(c))
+        !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];\"'#_".contains(c))
     }
     map(
         verify(take_while1(is_operator_punctuation), |s: &Span| **s != "="),
