@@ -1,4 +1,4 @@
-use dim::{new_parser, new_tokenizer, parser, tokenizer};
+use dim::{new_parser, new_tokenizer, old_tokenizer, pos_parser};
 use std::{fs, path::PathBuf};
 use structopt::StructOpt;
 
@@ -22,10 +22,10 @@ fn main() {
             println!("{:?} {}", filenames, inline);
             for filename in filenames {
                 let contents = fs::read_to_string(filename).expect("unable to read file");
-                let tokens = tokenizer::tokenize(&contents);
+                let tokens = old_tokenizer::tokenize(&contents);
                 let new_tokens = new_tokenizer::tokenize(&contents);
                 new_parser::parse_tokens(new_tokens).unwrap();
-                parser::just_parse(tokens).unwrap();
+                pos_parser::just_parse(tokens).unwrap();
             }
         }
         Command::Eval { expression } => println!("{}", expression),

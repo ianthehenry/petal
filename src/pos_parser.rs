@@ -1,4 +1,4 @@
-use super::tokenizer::Token;
+use super::old_tokenizer::Token;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -812,7 +812,7 @@ fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tokenizer;
+    use super::super::old_tokenizer;
     use super::*;
 
     fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
@@ -849,7 +849,7 @@ mod tests {
     }
 
     fn test(input: &str) -> String {
-        let tokens = tokenizer::tokenize(input);
+        let tokens = old_tokenizer::tokenize(input);
         delimited("", &resolve_semicolons(tokens, Delimiter::Parens), "")
     }
 
@@ -915,7 +915,7 @@ mod tests {
     }
 
     fn tester(input: &str) -> String {
-        let tokens = tokenizer::tokenize(input);
+        let tokens = old_tokenizer::tokenize(input);
         let words = resolve_semicolons(tokens, Delimiter::Parens);
         match parse_to_completion(words) {
             Ok(term) => show_annotated_term(&term),
@@ -927,7 +927,7 @@ mod tests {
     }
 
     fn begin_parse(input: &str) -> Vec<ParseFrame> {
-        let tokens = tokenizer::tokenize(input);
+        let tokens = old_tokenizer::tokenize(input);
         let words = resolve_semicolons(tokens, Delimiter::Parens);
         let frame = ParseFrame::new(words, identity);
         vec![frame]
@@ -1114,7 +1114,7 @@ mod tests {
     }
 
     fn assign(name: &str, expr: &str) -> Assignment {
-        let tokens = tokenizer::tokenize(expr);
+        let tokens = old_tokenizer::tokenize(expr);
         let words = resolve_semicolons(tokens, Delimiter::Parens);
         Assignment {
             name: name.to_string(),
