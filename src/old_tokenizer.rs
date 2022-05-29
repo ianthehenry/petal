@@ -14,10 +14,10 @@ use nom::{
 };
 
 #[derive(Debug, PartialEq)]
-pub enum Token {
+pub enum OldToken {
     Int64(i64),
-    Parens(Vec<Token>),
-    Brackets(Vec<Token>),
+    Parens(Vec<OldToken>),
+    Brackets(Vec<OldToken>),
     Identifier(String),
     Semicolons(usize),
 }
@@ -25,47 +25,47 @@ pub enum Token {
 // TODO: obviously this is terrible. also it might make sense to wait to convert
 // this into an actual number until later in the pipeline. also we might need to
 // special-case rational numbers at some point huh.
-fn number(i: &str) -> IResult<&str, Token> {
+fn number(i: &str) -> IResult<&str, OldToken> {
     let (i, sign): (_, i64) = alt((char('-').map(|_| -1), success(1)))(i)?;
     map_res(digit1, move |digit_str: &str| {
-        (digit_str.parse::<i64>()).map(|num| Token::Int64(sign * num))
+        (digit_str.parse::<i64>()).map(|num| OldToken::Int64(sign * num))
     })(i)
 }
 
-fn identifier(i: &str) -> IResult<&str, Token> {
+fn identifier(i: &str) -> IResult<&str, OldToken> {
     map(alpha1, |sym_str: &str| {
-        Token::Identifier(sym_str.to_string())
+        OldToken::Identifier(sym_str.to_string())
     })(i)
 }
 
-fn brackets(i: &str) -> IResult<&str, Token> {
+fn brackets(i: &str) -> IResult<&str, OldToken> {
     map(delimited(char('['), tokens, char(']')), |tokens| {
-        Token::Brackets(tokens)
+        OldToken::Brackets(tokens)
     })(i)
 }
 
-fn parens(i: &str) -> IResult<&str, Token> {
+fn parens(i: &str) -> IResult<&str, OldToken> {
     map(delimited(char('('), tokens, char(')')), |tokens| {
-        Token::Parens(tokens)
+        OldToken::Parens(tokens)
     })(i)
 }
 
-fn unary_negation(i: &str) -> IResult<&str, Token> {
+fn unary_negation(i: &str) -> IResult<&str, OldToken> {
     // TODO: probably this should be some kind of builtin
     map(preceded(char('-'), token), |token| {
-        Token::Parens(vec![Token::Identifier("neg".to_string()), token])
+        OldToken::Parens(vec![OldToken::Identifier("neg".to_string()), token])
     })(i)
 }
 
-fn operator(i: &str) -> IResult<&str, Token> {
-    map(one_of("+-*."), |op| Token::Identifier(op.to_string()))(i)
+fn operator(i: &str) -> IResult<&str, OldToken> {
+    map(one_of("+-*."), |op| OldToken::Identifier(op.to_string()))(i)
 }
 
-fn semicolons(i: &str) -> IResult<&str, Token> {
-    map(many1(char(';')), |semis| Token::Semicolons(semis.len()))(i)
+fn semicolons(i: &str) -> IResult<&str, OldToken> {
+    map(many1(char(';')), |semis| OldToken::Semicolons(semis.len()))(i)
 }
 
-fn token(i: &str) -> IResult<&str, Token> {
+fn token(i: &str) -> IResult<&str, OldToken> {
     alt((
         number,
         unary_negation,
@@ -77,15 +77,15 @@ fn token(i: &str) -> IResult<&str, Token> {
     ))(i)
 }
 
-fn flatten_tokens(tokens: Vec<Vec<Token>>) -> Vec<Token> {
+fn flatten_tokens(tokens: Vec<Vec<OldToken>>) -> Vec<OldToken> {
     tokens.into_iter().flatten().collect()
 }
 
-fn compound_token(i: &str) -> IResult<&str, Vec<Token>> {
+fn compound_token(i: &str) -> IResult<&str, Vec<OldToken>> {
     map(
         many1(tuple((token, opt(tag("-")))).map(|(token, subtraction)| {
             if let Some(op) = subtraction {
-                vec![token, Token::Identifier(op.to_string())]
+                vec![token, OldToken::Identifier(op.to_string())]
             } else {
                 vec![token]
             }
@@ -94,11 +94,11 @@ fn compound_token(i: &str) -> IResult<&str, Vec<Token>> {
     )(i)
 }
 
-fn tokens(i: &str) -> IResult<&str, Vec<Token>> {
+fn tokens(i: &str) -> IResult<&str, Vec<OldToken>> {
     map(separated_list0(multispace1, compound_token), flatten_tokens)(i)
 }
 
-pub fn tokenize(i: &str) -> Vec<Token> {
+pub fn tokenize(i: &str) -> Vec<OldToken> {
     let (remaining, tokens) = tokens(i).unwrap();
     if !remaining.is_empty() {
         panic!("tokenize error");
@@ -110,8 +110,8 @@ pub fn tokenize(i: &str) -> Vec<Token> {
 mod tests {
     use super::*;
 
-    impl Token {
-        fn delimited(start: &str, tokens: Vec<Token>, end: &str) -> String {
+    impl OldToken {
+        fn delimited(start: &str, tokens: Vec<OldToken>, end: &str) -> String {
             let mut result = start.to_string();
             result += &tokens
                 .into_iter()
@@ -124,11 +124,11 @@ mod tests {
 
         fn to_short_string(self) -> String {
             match self {
-                Token::Int64(num) => num.to_string(),
-                Token::Identifier(id) => id.to_string(),
-                Token::Semicolons(count) => ";".repeat(count),
-                Token::Parens(tokens) => Token::delimited("(", tokens, ")"),
-                Token::Brackets(tokens) => Token::delimited("[", tokens, "]"),
+                OldToken::Int64(num) => num.to_string(),
+                OldToken::Identifier(id) => id.to_string(),
+                OldToken::Semicolons(count) => ";".repeat(count),
+                OldToken::Parens(tokens) => OldToken::delimited("(", tokens, ")"),
+                OldToken::Brackets(tokens) => OldToken::delimited("[", tokens, "]"),
             }
         }
     }
@@ -138,7 +138,7 @@ mod tests {
         if !remaining.is_empty() {
             panic!("not a total parse!");
         }
-        Token::delimited("", parsed, "")
+        OldToken::delimited("", parsed, "")
     }
 
     #[test]

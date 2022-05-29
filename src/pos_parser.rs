@@ -1,4 +1,4 @@
-use super::old_tokenizer::Token;
+use super::old_tokenizer::OldToken;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -148,21 +148,21 @@ impl Delimiter {
 
 // TODO: is there a good reason to do this ahead of time in a separate pass? why
 // not just do it in the middle of parsing?
-fn resolve_semicolons(tokens: Vec<Token>, delimiter: Delimiter) -> Vec<Word> {
+fn resolve_semicolons(tokens: Vec<OldToken>, delimiter: Delimiter) -> Vec<Word> {
     let mut index_levels: Vec<usize> = vec![];
     let mut words: Vec<Word> = vec![];
     for token in tokens {
         match token {
-            Token::Int64(value) => words.push(Word::Int64(value)),
-            Token::Parens(tokens) => {
+            OldToken::Int64(value) => words.push(Word::Int64(value)),
+            OldToken::Parens(tokens) => {
                 words.push(Word::Parens(resolve_semicolons(tokens, Delimiter::Parens)))
             }
-            Token::Brackets(tokens) => words.push(Word::Brackets(resolve_semicolons(
+            OldToken::Brackets(tokens) => words.push(Word::Brackets(resolve_semicolons(
                 tokens,
                 Delimiter::Brackets,
             ))),
-            Token::Identifier(value) => words.push(Word::Identifier(value)),
-            Token::Semicolons(level) => {
+            OldToken::Identifier(value) => words.push(Word::Identifier(value)),
+            OldToken::Semicolons(level) => {
                 if index_levels.len() < level {
                     index_levels.resize(level, 0)
                 }
@@ -428,7 +428,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
     }
 }
 
-pub fn just_parse(tokens: Vec<Token>) -> Result<(Term, PartOfSpeech), ParseError> {
+pub fn just_parse(tokens: Vec<OldToken>) -> Result<(Term, PartOfSpeech), ParseError> {
     let words = resolve_semicolons(tokens, Delimiter::Parens);
     let frame = ParseFrame::new(words, identity);
     match parse(vec![frame])? {
