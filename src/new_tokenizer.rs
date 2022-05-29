@@ -3,8 +3,8 @@ use std::cmp::Ordering;
 use crate::helpers::*;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1},
-    character::complete::{char, line_ending, space0, space1},
+    bytes::complete::{tag, take_while, take_while1},
+    character::complete::{anychar, char, line_ending, space0, space1},
     combinator::{eof, map, opt, recognize, verify},
     multi::many0,
     sequence::tuple,
@@ -102,9 +102,20 @@ impl std::fmt::Display for Token {
     }
 }
 
+fn is_initial_identifier_character(c: char) -> bool {
+    c.is_alphabetic() || c == '_'
+}
+
+fn is_identifier_character(c: char) -> bool {
+    is_initial_identifier_character(c) || c.is_numeric()
+}
+
 fn identifier(i: Span) -> IResult<Span, LocatedToken> {
     map(
-        take_while1(char::is_alphabetic),
+        recognize(tuple((
+            verify(anychar, |c| is_initial_identifier_character(*c)),
+            take_while(is_identifier_character),
+        ))),
         LocatedToken::build_string(Token::Identifier),
     )(i)
 }
@@ -267,6 +278,11 @@ x = 10
             ),
             "<= 10 ␤ < ␠ = 10 ␤ <= ␠ 10 ␤ < ␠ = ␠ 10 ␤"
         );
+    }
+
+    #[test]
+    fn identifiers() {
+        k9::snapshot!(test("1x x1 x1y"), "1 x ␠ x1 ␠ x1y ␤");
     }
 
     #[test]
