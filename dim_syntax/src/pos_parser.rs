@@ -1,4 +1,4 @@
-use super::old_tokenizer::OldToken;
+use crate::old_tokenizer::OldToken;
 use std::{
     cell::RefCell,
     collections::HashMap,

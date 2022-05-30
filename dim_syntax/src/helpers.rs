@@ -1,6 +1,6 @@
 use nom::{IResult, Parser};
 
-pub(crate) fn replace<I, O1, O2, E, F>(
+pub(super) fn replace<I, O1, O2, E, F>(
     mut parser: F,
     value: O2,
 ) -> impl FnMut(I) -> IResult<I, O2, E>
@@ -14,7 +14,7 @@ where
     }
 }
 
-pub(crate) fn ignore<I, O, E, F>(parser: F) -> impl FnMut(I) -> IResult<I, (), E>
+pub(super) fn ignore<I, O, E, F>(parser: F) -> impl FnMut(I) -> IResult<I, (), E>
 where
     F: Parser<I, O, E>,
 {

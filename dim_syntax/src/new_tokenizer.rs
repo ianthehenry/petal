@@ -1,6 +1,7 @@
-use std::cmp::Ordering;
-
 use crate::helpers::*;
+use crate::located_token::*;
+use crate::span::*;
+use crate::token::*;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
@@ -10,97 +11,7 @@ use nom::{
     sequence::tuple,
     IResult,
 };
-use nom_locate::LocatedSpan;
-
-#[derive(Debug, Clone)]
-pub struct Location {
-    offset: usize,
-    line: u32,
-}
-
-fn span_location(span: Span) -> Location {
-    Location {
-        offset: span.location_offset(),
-        line: span.location_line(),
-    }
-}
-
-pub type Span<'a> = LocatedSpan<&'a str>;
-
-#[derive(Debug, Clone)]
-pub struct LocatedToken {
-    pub location: Location,
-    pub token: Token,
-}
-
-impl LocatedToken {
-    fn new(location: Location, token: Token) -> Self {
-        LocatedToken { location, token }
-    }
-    fn of_span(span: Span, token: Token) -> Self {
-        LocatedToken {
-            location: span_location(span),
-            token,
-        }
-    }
-
-    fn build<F: Fn(&str) -> Token>(f: F) -> impl Fn(Span) -> LocatedToken {
-        move |span: Span| LocatedToken {
-            location: span_location(span),
-            token: f(span.fragment()),
-        }
-    }
-
-    fn build_string<F: Fn(String) -> Token>(f: F) -> impl Fn(Span) -> LocatedToken {
-        move |span: Span| LocatedToken {
-            location: span_location(span),
-            token: f(span.fragment().to_string()),
-        }
-    }
-
-    fn build_const(token: Token) -> impl Fn(Span) -> LocatedToken {
-        move |span: Span| LocatedToken {
-            location: span_location(span),
-            token: token.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, Clone)]
-pub enum Token {
-    Identifier(String),
-    PunctuationSoup(String),
-    NumericLiteral(String),
-    EqualSign,
-    OpenParen,
-    CloseParen,
-    OpenBracket,
-    CloseBracket,
-    Semicolons(usize),
-    Space,
-    Newline,
-    Indent,
-    Outdent,
-}
-
-impl std::fmt::Display for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use Token::*;
-        match self {
-            Space => write!(f, "␠"),
-            Newline => write!(f, "␤"),
-            Indent => write!(f, "→"),
-            Outdent => write!(f, "←"),
-            EqualSign => write!(f, "="),
-            OpenParen => write!(f, "("),
-            CloseParen => write!(f, ")"),
-            OpenBracket => write!(f, "["),
-            CloseBracket => write!(f, "]"),
-            Semicolons(count) => write!(f, "{}", ";".repeat(*count)),
-            Identifier(s) | PunctuationSoup(s) | NumericLiteral(s) => write!(f, "{}", s),
-        }
-    }
-}
+use std::cmp::Ordering;
 
 fn is_initial_identifier_character(c: char) -> bool {
     c.is_alphabetic() || c == '_'
@@ -164,7 +75,7 @@ fn eol(i: Span) -> IResult<Span, ()> {
     ignore(alt((line_ending, eof)))(i)
 }
 
-pub fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
+pub(super) fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
     let mut result = Vec::new();
     let mut indentation_stack: Vec<usize> = vec![0];
 
@@ -232,8 +143,8 @@ pub fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
 
 // TODO: comments, string literals, etc. certain types of comments are actually
 // significant...
-pub fn tokenize(i: &str) -> Vec<LocatedToken> {
-    let i = LocatedSpan::new(i);
+pub(super) fn tokenize(i: &str) -> Vec<LocatedToken> {
+    let i = new_span(i);
     let (remaining, tokens) = tokenize_lines(i).unwrap();
     if !remaining.is_empty() {
         panic!("tokenize error, remaining: {:?}", remaining);
@@ -333,7 +244,7 @@ g
     #[test]
     fn illegal_outdent() {
         k9::snapshot!(
-            tokenize_lines(LocatedSpan::new(
+            tokenize_lines(new_span(
                 "
 a
   b
