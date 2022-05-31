@@ -10,9 +10,12 @@ impl<'a> Tokens<'a> {
         Tokens(x)
     }
 
-    pub(super) fn first(&self) -> &LocatedToken {
-        &self.0[0]
-    }
+    // TODO: I would like to use this function and make the constructor private,
+    // but for some reason it doesn't work. I think some kind of lifetime
+    // trouble.
+    // pub(super) fn first(&self) -> &LocatedToken {
+    //     &self.0[0]
+    // }
 
     pub(super) fn is_empty(&self) -> bool {
         self.0.is_empty()

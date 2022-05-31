@@ -6,9 +6,11 @@ pub(super) struct Location {
     line: u32,
 }
 
-pub(super) fn span_location(span: Span) -> Location {
-    Location {
-        offset: span.location_offset(),
-        line: span.location_line(),
+impl Location {
+    pub(super) fn of_span(span: &Span) -> Self {
+        Location {
+            offset: span.location_offset(),
+            line: span.location_line(),
+        }
     }
 }

@@ -1,4 +1,3 @@
-use dim_syntax::{new_parser, pos_parser, tokenizer};
 use std::{fs, path::PathBuf};
 use structopt::StructOpt;
 
@@ -22,12 +21,7 @@ fn main() {
             println!("{:?} {}", filenames, inline);
             for filename in filenames {
                 let contents = fs::read_to_string(filename).expect("unable to read file");
-                let tokens = crate::tokenizer::tokenize(input);
-                let terms = crate::new_parser::parse_expression(tokens).unwrap();
-                let terms = crate::semicolons::resolve_expression(terms);
-                let terms = crate::op_splitter::split_expression(terms);
-
-                pos_parser::just_parse(terms).unwrap();
+                dim_syntax::parse(&contents).unwrap();
             }
         }
         Command::Eval { expression } => println!("{}", expression),

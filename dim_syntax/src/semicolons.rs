@@ -102,7 +102,8 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// TODO
+// #[cfg(test)]
 pub(super) fn resolve_expression(terms: Vec<SemiSoupyTerm>) -> Vec<SoupyTerm> {
     resolve_semicolons(terms, Delimiter::Parens)
 }

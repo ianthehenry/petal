@@ -672,7 +672,7 @@ mod tests {
                     };
                     provide(
                         &mut call_stack,
-                        Term::Atom(Atom::Identifier(RichIdentifier { name, id: 0 })),
+                        Term::Atom(Atom::Identifier(RichIdentifier::new(0, name))),
                         pos,
                     );
                 }
@@ -688,7 +688,7 @@ mod tests {
         crate::coefficient_grouper::group(terms)
     }
 
-    fn tester(input: &str) -> String {
+    fn test(input: &str) -> String {
         match parse_to_completion(preparse(input)) {
             Ok(term) => show_annotated_term(&term),
             Err(ParseError::DidNotFullyReduce(terms)) => {
@@ -717,63 +717,60 @@ mod tests {
 
     #[test]
     fn test_parser() {
-        k9::snapshot!(tester("neg 1 + 2"), "n:(neg (+ 1 2))");
-        k9::snapshot!(tester("fold +"), "v1:(fold +)");
-        k9::snapshot!(tester("fold + x"), "n:((fold +) x)");
-        k9::snapshot!(tester("x + y"), "n:(+ x y)");
-        k9::snapshot!(tester("x +.* y"), "n:((. + *) x y)");
-        k9::snapshot!(tester("x fold + . * y"), "n:((. (fold +) *) x y)");
-        k9::snapshot!(tester("x + . fold * y"), "n:((. + (fold *)) x y)");
+        k9::snapshot!(test("neg 1 + 2"), "n:(neg (+ 1 2))");
+        k9::snapshot!(test("fold +"), "v1:(fold +)");
+        k9::snapshot!(test("fold + x"), "n:((fold +) x)");
+        k9::snapshot!(test("x + y"), "n:(+ x y)");
+        k9::snapshot!(test("x +.* y"), "n:((. + *) x y)");
+        k9::snapshot!(test("x fold + . * y"), "n:((. (fold +) *) x y)");
+        k9::snapshot!(test("x + . fold * y"), "n:((. + (fold *)) x y)");
+        k9::snapshot!(test("x fold + . fold * y"), "n:((. (fold +) (fold *)) x y)");
         k9::snapshot!(
-            tester("x fold + . fold * y"),
-            "n:((. (fold +) (fold *)) x y)"
-        );
-        k9::snapshot!(
-            tester("x fold * . fold + . fold * y"),
+            test("x fold * . fold + . fold * y"),
             "n:((. (fold *) (. (fold +) (fold *))) x y)"
         );
     }
 
     #[test]
     fn test_adverbs() {
-        k9::snapshot!(tester("1 + 2"), "n:(+ 1 2)");
-        k9::snapshot!(tester("1 flip + 2"), "n:((flip +) 1 2)");
+        k9::snapshot!(test("1 + 2"), "n:(+ 1 2)");
+        k9::snapshot!(test("1 flip + 2"), "n:((flip +) 1 2)");
     }
 
     #[test]
     fn test_tuples() {
-        k9::snapshot!(tester("1 + 1 2"), "n:(+ 1 (<tuple> 1 2))");
-        k9::snapshot!(tester("1 + 1 2 3 4 5"), "n:(+ 1 (<tuple> 1 2 3 4 5))");
-        k9::snapshot!(tester("1 + 1 neg 2"), "n:(+ 1 (<tuple> 1 (neg 2)))");
-        k9::snapshot!(tester("1 2 + 1 2"), "n:(+ (<tuple> 1 2) (<tuple> 1 2))");
-        k9::snapshot!(tester("1 + (1 2) 3"), "n:(+ 1 (<tuple> (<tuple> 1 2) 3))");
-        k9::snapshot!(tester("1 + (1 2 3)"), "n:(+ 1 (<tuple> 1 2 3))");
-        k9::snapshot!(tester("1 + 2; 3"), "n:(<tuple> (+ 1 2) 3)");
+        k9::snapshot!(test("1 + 1 2"), "n:(+ 1 (<tuple> 1 2))");
+        k9::snapshot!(test("1 + 1 2 3 4 5"), "n:(+ 1 (<tuple> 1 2 3 4 5))");
+        k9::snapshot!(test("1 + 1 neg 2"), "n:(+ 1 (<tuple> 1 (neg 2)))");
+        k9::snapshot!(test("1 2 + 1 2"), "n:(+ (<tuple> 1 2) (<tuple> 1 2))");
+        k9::snapshot!(test("1 + (1 2) 3"), "n:(+ 1 (<tuple> (<tuple> 1 2) 3))");
+        k9::snapshot!(test("1 + (1 2 3)"), "n:(+ 1 (<tuple> 1 2 3))");
+        k9::snapshot!(test("1 + 2; 3"), "n:(<tuple> (+ 1 2) 3)");
     }
 
     #[test]
     fn test_operator_sections() {
-        k9::snapshot!(tester("+ 1"), "v1:(<rhs> + 1)");
-        k9::snapshot!(tester("+ 1 2"), "v1:(<rhs> + (<tuple> 1 2))");
-        k9::snapshot!(tester("(+ 1) 2"), "n:((<rhs> + 1) 2)");
-        k9::snapshot!(tester("1 +"), "v1:(<lhs> + 1)");
-        k9::snapshot!(tester("1 2 +"), "v1:(<lhs> + (<tuple> 1 2))");
+        k9::snapshot!(test("+ 1"), "v1:(<rhs> + 1)");
+        k9::snapshot!(test("+ 1 2"), "v1:(<rhs> + (<tuple> 1 2))");
+        k9::snapshot!(test("(+ 1) 2"), "n:((<rhs> + 1) 2)");
+        k9::snapshot!(test("1 +"), "v1:(<lhs> + 1)");
+        k9::snapshot!(test("1 2 +"), "v1:(<lhs> + (<tuple> 1 2))");
 
-        k9::snapshot!(tester("flip + 1"), "v1:(<rhs> (flip +) 1)");
-        k9::snapshot!(tester("flip + 1 2"), "v1:(<rhs> (flip +) (<tuple> 1 2))");
-        k9::snapshot!(tester("(flip + 1) 2"), "n:((<rhs> (flip +) 1) 2)");
-        k9::snapshot!(tester("1 flip +"), "v1:(<lhs> (flip +) 1)");
-        k9::snapshot!(tester("1 2 flip +"), "v1:(<lhs> (flip +) (<tuple> 1 2))");
+        k9::snapshot!(test("flip + 1"), "v1:(<rhs> (flip +) 1)");
+        k9::snapshot!(test("flip + 1 2"), "v1:(<rhs> (flip +) (<tuple> 1 2))");
+        k9::snapshot!(test("(flip + 1) 2"), "n:((<rhs> (flip +) 1) 2)");
+        k9::snapshot!(test("1 flip +"), "v1:(<lhs> (flip +) 1)");
+        k9::snapshot!(test("1 2 flip +"), "v1:(<lhs> (flip +) (<tuple> 1 2))");
     }
 
     #[test]
     fn test_unary_composition() {
-        k9::snapshot!(tester("neg sign"), "v1:(<comp> neg sign)");
-        k9::snapshot!(tester("neg sign neg"), "v1:(<comp> neg (<comp> sign neg))");
+        k9::snapshot!(test("neg sign"), "v1:(<comp> neg sign)");
+        k9::snapshot!(test("neg sign neg"), "v1:(<comp> neg (<comp> sign neg))");
 
-        k9::snapshot!(tester("fold + fold *"), "v1:(<comp> (fold +) (fold *))");
+        k9::snapshot!(test("fold + fold *"), "v1:(<comp> (fold +) (fold *))");
         k9::snapshot!(
-            tester("fold + fold * fold +"),
+            test("fold + fold * fold +"),
             "v1:(<comp> (fold +) (<comp> (fold *) (fold +)))"
         );
     }
@@ -781,89 +778,83 @@ mod tests {
     #[test]
     fn test_implicit_composition() {
         k9::snapshot!(
-            tester("neg + sign"),
+            test("neg + sign"),
             "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
         );
         k9::snapshot!(
-            tester("neg sign + neg"),
+            test("neg sign + neg"),
             "v2:(<comp-lhs> (<comp-lhs> (<comp-rhs> + neg) sign) neg)"
         );
         k9::snapshot!(
-            tester("neg + sign neg"),
+            test("neg + sign neg"),
             "v2:(<comp-lhs> (<comp-rhs> + (<comp> sign neg)) neg)"
         );
 
         k9::snapshot!(
-            tester("neg + (sign neg)"),
+            test("neg + (sign neg)"),
             "v2:(<comp-lhs> (<comp-rhs> + (<comp> sign neg)) neg)"
         );
 
-        k9::snapshot!(tester("+ neg"), "v2:(<comp-rhs> + neg)");
-        k9::snapshot!(tester("neg +"), "v2:(<comp-lhs> + neg)");
-        k9::snapshot!(tester("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
+        k9::snapshot!(test("+ neg"), "v2:(<comp-rhs> + neg)");
+        k9::snapshot!(test("neg +"), "v2:(<comp-lhs> + neg)");
+        k9::snapshot!(test("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
 
-        k9::snapshot!(tester("flip + neg"), "v2:(<comp-rhs> (flip +) neg)");
-        k9::snapshot!(tester("neg flip +"), "v2:(<comp-lhs> (flip +) neg)");
-        k9::snapshot!(tester("neg flip + 1"), "v1:(<comp> neg (<rhs> (flip +) 1))");
+        k9::snapshot!(test("flip + neg"), "v2:(<comp-rhs> (flip +) neg)");
+        k9::snapshot!(test("neg flip +"), "v2:(<comp-lhs> (flip +) neg)");
+        k9::snapshot!(test("neg flip + 1"), "v1:(<comp> neg (<rhs> (flip +) 1))");
     }
 
     #[test]
     fn test_array_literals() {
-        k9::snapshot!(tester("[]"), "n:[]");
-        k9::snapshot!(tester("[1 2 3]"), "n:[1 2 3]");
-        k9::snapshot!(tester("[1 2 3; 4 5 6]"), "n:[[1 2 3] [4 5 6]]");
+        k9::snapshot!(test("[]"), "n:[]");
+        k9::snapshot!(test("[1 2 3]"), "n:[1 2 3]");
+        k9::snapshot!(test("[1 2 3; 4 5 6]"), "n:[[1 2 3] [4 5 6]]");
         k9::snapshot!(
-            tester("[1 2 3; 4 5 6;; 7 8 9; 10 11 12]"),
+            test("[1 2 3; 4 5 6;; 7 8 9; 10 11 12]"),
             "n:[[[1 2 3] [4 5 6]] [[7 8 9] [10 11 12]]]"
         );
     }
 
     #[test]
     fn test_confusing_expressions() {
-        k9::snapshot!(tester("* 1 +"), "v2:(<comp-rhs> * (<lhs> + 1))");
-        k9::snapshot!(tester("* + 1"), "v2:(<comp-rhs> * (<rhs> + 1))");
-        k9::snapshot!(tester("1 * +"), "v2:(<comp-lhs> + (<lhs> * 1))");
+        k9::snapshot!(test("* 1 +"), "v2:(<comp-rhs> * (<lhs> + 1))");
+        k9::snapshot!(test("* + 1"), "v2:(<comp-rhs> * (<rhs> + 1))");
+        k9::snapshot!(test("1 * +"), "v2:(<comp-lhs> + (<lhs> * 1))");
     }
 
     #[test]
     fn test_implicit_equivalences() {
         k9::snapshot!(
-            tester("neg + sign"),
+            test("neg + sign"),
             "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
         );
         k9::snapshot!(
-            tester("neg (+ sign)"),
+            test("neg (+ sign)"),
             "v2:(<comp-lhs> (<comp-rhs> + sign) neg)"
         );
 
-        k9::snapshot!(tester("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
-        k9::snapshot!(tester("neg (+ 1)"), "v1:(<comp> neg (<rhs> + 1))");
+        k9::snapshot!(test("neg + 1"), "v1:(<comp> neg (<rhs> + 1))");
+        k9::snapshot!(test("neg (+ 1)"), "v1:(<comp> neg (<rhs> + 1))");
 
-        k9::snapshot!(tester("+ sign neg"), "v2:(<comp-rhs> + (<comp> sign neg))");
-        k9::snapshot!(
-            tester("+ (sign neg)"),
-            "v2:(<comp-rhs> + (<comp> sign neg))"
-        );
+        k9::snapshot!(test("+ sign neg"), "v2:(<comp-rhs> + (<comp> sign neg))");
+        k9::snapshot!(test("+ (sign neg)"), "v2:(<comp-rhs> + (<comp> sign neg))");
     }
 
     #[test]
     fn test_parse_errors() {
-        k9::snapshot!(tester("* +"), "incomplete parse: v2:+ v2:*");
-        k9::snapshot!(tester("* flip +"), "incomplete parse: v2:(flip +) v2:*");
-        k9::snapshot!(tester(". +"), "incomplete parse: v2:+ a2:.");
-        k9::snapshot!(tester("+ ."), "incomplete parse: a2:. v2:+");
-        k9::snapshot!(tester("flip ."), "incomplete parse: a2:. a1:flip");
-        k9::snapshot!(tester("fold ."), "incomplete parse: a2:. a1:fold");
-        k9::snapshot!(tester(". flip"), "incomplete parse: a1:flip a2:.");
-        k9::snapshot!(tester(". fold"), "incomplete parse: a1:fold a2:.");
-        k9::snapshot!(tester("flip fold"), "incomplete parse: a1:fold a1:flip");
+        k9::snapshot!(test("* +"), "incomplete parse: v2:+ v2:*");
+        k9::snapshot!(test("* flip +"), "incomplete parse: v2:(flip +) v2:*");
+        k9::snapshot!(test(". +"), "incomplete parse: v2:+ a2:.");
+        k9::snapshot!(test("+ ."), "incomplete parse: a2:. v2:+");
+        k9::snapshot!(test("flip ."), "incomplete parse: a2:. a1:flip");
+        k9::snapshot!(test("fold ."), "incomplete parse: a2:. a1:fold");
+        k9::snapshot!(test(". flip"), "incomplete parse: a1:flip a2:.");
+        k9::snapshot!(test(". fold"), "incomplete parse: a1:fold a2:.");
+        k9::snapshot!(test("flip fold"), "incomplete parse: a1:fold a1:flip");
     }
 
     fn id(name: &str) -> Term {
-        Term::Atom(Atom::Identifier(RichIdentifier {
-            name: name.to_string(),
-            id: 0,
-        }))
+        Term::Atom(Atom::Identifier(RichIdentifier::new(0, name.to_string())))
     }
 
     #[test]
@@ -988,7 +979,7 @@ mod tests {
 
         for (id, status) in kvps {
             let name = scope.name_of_id(&id);
-            let rich_id = RichIdentifier { id, name };
+            let rich_id = RichIdentifier::new(id, name);
             disambiguator.see(rich_id.clone());
 
             if first {
@@ -1003,10 +994,10 @@ mod tests {
                     let mut f = |atom: &Atom| match atom {
                         Atom::Identifier(rich_id) => {
                             disambiguator.see(rich_id.clone());
-                            Atom::Identifier(RichIdentifier {
-                                id: rich_id.id,
-                                name: disambiguator.view(rich_id),
-                            })
+                            Atom::Identifier(RichIdentifier::new(
+                                rich_id.id,
+                                disambiguator.view(rich_id),
+                            ))
                         }
                         _ => atom.clone(),
                     };
@@ -1021,10 +1012,7 @@ mod tests {
                 }
                 AssignmentStatus::Failed(ParseError::BadReference(prereq_id)) => {
                     let prereq_name = scope.name_of_id(prereq_id);
-                    let rich_prereq_id = RichIdentifier {
-                        id: *prereq_id,
-                        name: prereq_name,
-                    };
+                    let rich_prereq_id = RichIdentifier::new(*prereq_id, prereq_name);
                     result.push_str(&format!(
                         "{} depends on failed {}",
                         disambiguator.view(&rich_id),
@@ -1040,10 +1028,7 @@ mod tests {
                 }
                 AssignmentStatus::Cyclic(prereq_id) => {
                     let prereq_name = scope.name_of_id(prereq_id);
-                    let rich_prereq_id = RichIdentifier {
-                        id: *prereq_id,
-                        name: prereq_name,
-                    };
+                    let rich_prereq_id = RichIdentifier::new(*prereq_id, prereq_name);
                     disambiguator.see(rich_prereq_id.clone());
                     result.push_str(&format!(
                         "{} depends on {}",

@@ -13,28 +13,28 @@ impl LocatedToken {
     }
     pub(super) fn of_span(span: Span, token: Token) -> Self {
         LocatedToken {
-            location: span_location(span),
+            location: Location::of_span(&span),
             token,
         }
     }
 
     pub(super) fn build<F: Fn(&str) -> Token>(f: F) -> impl Fn(Span) -> LocatedToken {
         move |span: Span| LocatedToken {
-            location: span_location(span),
+            location: Location::of_span(&span),
             token: f(span.fragment()),
         }
     }
 
     pub(super) fn build_string<F: Fn(String) -> Token>(f: F) -> impl Fn(Span) -> LocatedToken {
         move |span: Span| LocatedToken {
-            location: span_location(span),
+            location: Location::of_span(&span),
             token: f(span.fragment().to_string()),
         }
     }
 
     pub(super) fn build_const(token: Token) -> impl Fn(Span) -> LocatedToken {
         move |span: Span| LocatedToken {
-            location: span_location(span),
+            location: Location::of_span(&span),
             token: token.clone(),
         }
     }
