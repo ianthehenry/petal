@@ -1,26 +1,5 @@
-use crate::terms::SpacelessTerm;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    fmt,
-    hash::{Hash, Hasher},
-    rc::Rc,
-};
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Builtin {
-    PartialApplicationLeft,
-    PartialApplicationRight,
-    Compose,
-    ComposeLeft,
-    ComposeRight,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Atom {
-    NumericLiteral(String),
-    Identifier(RichIdentifier),
-}
+use crate::terms::{Atom, Builtin, Identifier, RichIdentifier, SpacelessTerm, Term};
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Arity {
@@ -36,79 +15,11 @@ pub enum PartOfSpeech {
 }
 use PartOfSpeech::*;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Term {
-    Implicit(Builtin),
-    Atom(Atom),
-    Parens(Box<Term>),
-    // note: currently tuples and brackets store their elements in reverse order
-    Tuple(Vec<Term>),
-    Brackets(Vec<Term>),
-    UnaryApplication(Box<Term>, Box<Term>),
-    BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
-}
-
 #[derive(Debug)]
 pub enum ParseError {
     DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
     ArrayLiteralNotNoun,
     BadReference(Identifier),
-}
-
-impl fmt::Display for Atom {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Atom::NumericLiteral(num) => write!(f, "{}", num),
-            Atom::Identifier(id) => write!(f, "{}", id),
-        }
-    }
-}
-
-impl fmt::Display for Builtin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use Builtin::*;
-        match self {
-            PartialApplicationLeft => write!(f, "lhs"),
-            PartialApplicationRight => write!(f, "rhs"),
-            Compose => write!(f, "comp"),
-            ComposeLeft => write!(f, "comp-lhs"),
-            ComposeRight => write!(f, "comp-rhs"),
-        }
-    }
-}
-impl fmt::Display for Term {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use Term::*;
-        match self {
-            Atom(atom) => write!(f, "{}", atom),
-            Implicit(builtin) => write!(f, "<{}>", builtin),
-            Parens(term) => write!(f, "{}", term),
-            Brackets(terms) => {
-                write!(f, "[")?;
-                for (i, term) in terms.iter().rev().enumerate() {
-                    if i != 0 {
-                        write!(f, " ")?;
-                    }
-
-                    write!(f, "{}", term)?;
-                }
-                write!(f, "]")
-            }
-            Tuple(terms) => {
-                write!(f, "(<tuple>")?;
-                for term in terms.iter().rev() {
-                    write!(f, " {}", term)?;
-                }
-                write!(f, ")")
-            }
-            UnaryApplication(func, term) => {
-                write!(f, "({} {})", func, term)
-            }
-            BinaryApplication(func, lhs, rhs) => {
-                write!(f, "({} {} {})", func, lhs, rhs)
-            }
-        }
-    }
 }
 
 impl fmt::Display for PartOfSpeech {
@@ -437,38 +348,6 @@ enum ParseStatus {
     Failed(ParseError),
 }
 
-type Identifier = u64;
-
-#[derive(Eq, Debug, Clone)]
-pub struct RichIdentifier {
-    id: Identifier,
-    name: String,
-}
-
-impl RichIdentifier {
-    fn new(id: Identifier, name: String) -> Self {
-        RichIdentifier { id, name }
-    }
-}
-
-impl fmt::Display for RichIdentifier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl PartialEq for RichIdentifier {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Hash for RichIdentifier {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
 struct ParseOperation {
     id: Identifier,
     call_stack: Vec<ParseFrame>,
@@ -589,10 +468,7 @@ impl Scope {
     }
 
     fn complete(&mut self, id: Identifier, term: Term, pos: PartOfSpeech) {
-        let rich_id = RichIdentifier {
-            name: self.name_of_id(&id),
-            id,
-        };
+        let rich_id = RichIdentifier::new(id, self.name_of_id(&id));
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for mut parse in parses {
                 provide(
