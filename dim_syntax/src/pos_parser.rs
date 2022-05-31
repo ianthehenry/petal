@@ -1,4 +1,4 @@
-use crate::old_tokenizer::OldToken;
+use crate::terms::SpacelessTerm;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -6,14 +6,6 @@ use std::{
     hash::{Hash, Hasher},
     rc::Rc,
 };
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word {
-    Int64(i64),
-    Parens(Vec<Word>),
-    Brackets(Vec<Word>),
-    Identifier(String),
-}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Builtin {
@@ -26,14 +18,8 @@ pub enum Builtin {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Atom {
-    Int64(i64),
+    NumericLiteral(String),
     Identifier(RichIdentifier),
-}
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum Delimiter {
-    Parens,
-    Brackets,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -72,7 +58,7 @@ pub enum ParseError {
 impl fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Atom::Int64(num) => write!(f, "{}", num),
+            Atom::NumericLiteral(num) => write!(f, "{}", num),
             Atom::Identifier(id) => write!(f, "{}", id),
         }
     }
@@ -94,7 +80,7 @@ impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Term::*;
         match self {
-            Atom(word) => write!(f, "{}", word),
+            Atom(atom) => write!(f, "{}", atom),
             Implicit(builtin) => write!(f, "<{}>", builtin),
             Parens(term) => write!(f, "{}", term),
             Brackets(terms) => {
@@ -137,63 +123,19 @@ impl fmt::Display for PartOfSpeech {
     }
 }
 
-impl Delimiter {
-    fn wrap(&self, words: Vec<Word>) -> Word {
-        match self {
-            Self::Parens => Word::Parens(words),
-            Self::Brackets => Word::Brackets(words),
-        }
-    }
-}
-
-// TODO: is there a good reason to do this ahead of time in a separate pass? why
-// not just do it in the middle of parsing?
-fn resolve_semicolons(tokens: Vec<OldToken>, delimiter: Delimiter) -> Vec<Word> {
-    let mut index_levels: Vec<usize> = vec![];
-    let mut words: Vec<Word> = vec![];
-    for token in tokens {
-        match token {
-            OldToken::Int64(value) => words.push(Word::Int64(value)),
-            OldToken::Parens(tokens) => {
-                words.push(Word::Parens(resolve_semicolons(tokens, Delimiter::Parens)))
-            }
-            OldToken::Brackets(tokens) => words.push(Word::Brackets(resolve_semicolons(
-                tokens,
-                Delimiter::Brackets,
-            ))),
-            OldToken::Identifier(value) => words.push(Word::Identifier(value)),
-            OldToken::Semicolons(level) => {
-                if index_levels.len() < level {
-                    index_levels.resize(level, 0)
-                }
-                let next_index = index_levels[level - 1] + 1;
-
-                for start_index in index_levels.iter_mut().take(level) {
-                    let to_wrap = words.drain(*start_index..).collect();
-                    words.push(delimiter.wrap(to_wrap));
-                    *start_index = next_index;
-                }
-            }
-        }
-    }
-
-    for start_index in index_levels {
-        let to_wrap = words.drain(start_index..).collect();
-        words.push(delimiter.wrap(to_wrap));
-    }
-    words
-}
-
 #[derive(Debug)]
 struct ParseFrame {
     stack: Vec<Option<(Term, PartOfSpeech)>>,
-    input: Vec<Word>,
+    input: Vec<SpacelessTerm>,
     end_reached: bool,
     finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>,
 }
 
 impl ParseFrame {
-    fn new(input: Vec<Word>, finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>) -> Self {
+    fn new(
+        input: Vec<SpacelessTerm>,
+        finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>,
+    ) -> Self {
         Self {
             input,
             end_reached: false,
@@ -428,9 +370,8 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
     }
 }
 
-pub fn just_parse(tokens: Vec<OldToken>) -> Result<(Term, PartOfSpeech), ParseError> {
-    let words = resolve_semicolons(tokens, Delimiter::Parens);
-    let frame = ParseFrame::new(words, identity);
+pub(super) fn just_parse(terms: Vec<SpacelessTerm>) -> Result<(Term, PartOfSpeech), ParseError> {
+    let frame = ParseFrame::new(terms, identity);
     match parse(vec![frame])? {
         ParseResult::Complete(term, pos) => Ok((term, pos)),
         ParseResult::Partial(_, _) => panic!("partial parse"),
@@ -465,11 +406,17 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
                 }
             }
 
-            Some(word) => match word {
-                Word::Int64(num) => frame.stack.push(Some((Term::Atom(Atom::Int64(num)), Noun))),
-                Word::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
-                Word::Parens(words) => call_stack.push(ParseFrame::new(words, wrap_parens)),
-                Word::Brackets(words) => call_stack.push(ParseFrame::new(words, wrap_brackets)),
+            Some(term) => match term {
+                SpacelessTerm::NumericLiteral(num) => frame
+                    .stack
+                    .push(Some((Term::Atom(Atom::NumericLiteral(num)), Noun))),
+                SpacelessTerm::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
+                SpacelessTerm::Parens(terms) => {
+                    call_stack.push(ParseFrame::new(terms, wrap_parens))
+                }
+                SpacelessTerm::Brackets(terms) => {
+                    call_stack.push(ParseFrame::new(terms, wrap_brackets))
+                }
             },
         };
     }
@@ -477,7 +424,7 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
 
 struct Assignment {
     name: String,
-    expression: Vec<Word>,
+    expression: Vec<SpacelessTerm>,
 }
 
 // "partial" means that it's waiting for an identifier that has not been seen at
@@ -812,7 +759,6 @@ fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::old_tokenizer;
     use super::*;
 
     fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
@@ -828,63 +774,7 @@ mod tests {
             .join(" ")
     }
 
-    fn delimited(start: &str, words: &[Word], end: &str) -> String {
-        let mut result = start.to_string();
-        result += &words
-            .iter()
-            .map(word_short_string)
-            .collect::<Vec<_>>()
-            .join(" ");
-        result += end;
-        result
-    }
-
-    fn word_short_string(word: &Word) -> String {
-        match word {
-            Word::Int64(num) => num.to_string(),
-            Word::Identifier(id) => id.to_string(),
-            Word::Parens(words) => delimited("(", words, ")"),
-            Word::Brackets(words) => delimited("[", words, "]"),
-        }
-    }
-
-    fn test(input: &str) -> String {
-        let tokens = old_tokenizer::tokenize(input);
-        delimited("", &resolve_semicolons(tokens, Delimiter::Parens), "")
-    }
-
-    #[test]
-    fn semicolon_resolution() {
-        k9::snapshot!(test("[1]"), "[1]");
-        k9::snapshot!(test("[1 2]"), "[1 2]");
-        k9::snapshot!(test("[1 2; 3 4]"), "[[1 2] [3 4]]");
-        k9::snapshot!(test("[1 ;; 2]"), "[[[1]] [[2]]]");
-        k9::snapshot!(test("[1 ; ;; 2]"), "[[[1] []] [[2]]]");
-        k9::snapshot!(test("[1 2; 3 4; 5 6]"), "[[1 2] [3 4] [5 6]]");
-        k9::snapshot!(
-            test("[1 2; 3 4;; 5 6; 7 8]"),
-            "[[[1 2] [3 4]] [[5 6] [7 8]]]"
-        );
-
-        k9::snapshot!(test("[1 2;; 3 4; 5 6]"), "[[[1 2]] [[3 4] [5 6]]]");
-    }
-
-    #[test]
-    fn semicolons_in_parens() {
-        k9::snapshot!(test("(1 + 2; f 3)"), "((1 + 2) (f 3))");
-        k9::snapshot!(test("(1 2; 3 4;; 5)"), "(((1 2) (3 4)) ((5)))");
-    }
-
-    #[test]
-    fn nested_heterogeneous_semicolons() {
-        k9::snapshot!(test("[[1; 2] [3 4]]"), "[[[1] [2]] [3 4]]");
-        k9::snapshot!(
-            test("(1 2 (3 4; 5 6);; [7; 8])"),
-            "(((1 2 ((3 4) (5 6)))) (([[7] [8]])))"
-        );
-    }
-
-    fn parse_to_completion(input: Vec<Word>) -> Result<(Term, PartOfSpeech), ParseError> {
+    fn parse_to_completion(input: Vec<SpacelessTerm>) -> Result<(Term, PartOfSpeech), ParseError> {
         use ParseResult::*;
 
         let frame = ParseFrame::new(input, identity);
@@ -914,10 +804,16 @@ mod tests {
         }
     }
 
+    fn preparse(input: &str) -> Vec<SpacelessTerm> {
+        let tokens = crate::tokenizer::tokenize(input);
+        let terms = crate::new_parser::parse_expression(tokens).unwrap();
+        let terms = crate::semicolons::resolve_expression(terms);
+        let terms = crate::op_splitter::split_expression(terms);
+        crate::coefficient_grouper::group(terms)
+    }
+
     fn tester(input: &str) -> String {
-        let tokens = old_tokenizer::tokenize(input);
-        let words = resolve_semicolons(tokens, Delimiter::Parens);
-        match parse_to_completion(words) {
+        match parse_to_completion(preparse(input)) {
             Ok(term) => show_annotated_term(&term),
             Err(ParseError::DidNotFullyReduce(terms)) => {
                 format!("incomplete parse: {}", show_annotated_terms(terms))
@@ -927,9 +823,7 @@ mod tests {
     }
 
     fn begin_parse(input: &str) -> Vec<ParseFrame> {
-        let tokens = old_tokenizer::tokenize(input);
-        let words = resolve_semicolons(tokens, Delimiter::Parens);
-        let frame = ParseFrame::new(words, identity);
+        let frame = ParseFrame::new(preparse(input), identity);
         vec![frame]
     }
 
@@ -1114,11 +1008,9 @@ mod tests {
     }
 
     fn assign(name: &str, expr: &str) -> Assignment {
-        let tokens = old_tokenizer::tokenize(expr);
-        let words = resolve_semicolons(tokens, Delimiter::Parens);
         Assignment {
             name: name.to_string(),
-            expression: words,
+            expression: preparse(expr),
         }
     }
 

@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     fn test(input: &str) -> String {
-        let tokens = crate::new_tokenizer::tokenize(input);
+        let tokens = crate::tokenizer::tokenize(input);
         let terms = crate::new_parser::parse_expression(tokens).unwrap();
         resolve_semicolons(terms, Delimiter::Parens)
             .iter()
@@ -100,6 +100,11 @@ mod tests {
             "(((1 ␠ 2 ␠ ((3 ␠ 4) (␠ 5 ␠ 6)))) ((␠ [[7] [␠ 8]])))"
         );
     }
+}
+
+#[cfg(test)]
+pub(super) fn resolve_expression(terms: Vec<SemiSoupyTerm>) -> Vec<SoupyTerm> {
+    resolve_semicolons(terms, Delimiter::Parens)
 }
 
 pub(super) fn rewrite(block: Block<SemiSoupyTerm>) -> Block<SoupyTerm> {

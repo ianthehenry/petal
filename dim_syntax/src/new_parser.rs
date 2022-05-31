@@ -147,20 +147,18 @@ fn statements(i: Tokens) -> ParseResult<Vec<Statement<SemiSoupyTerm>>> {
     Ok((i, statements))
 }
 
-#[cfg(test)]
+// TODO: this should be test when i'm not using it in main anymore
+// #[cfg(test)]
 pub(super) fn parse_expression(
     tokens: Vec<LocatedToken>,
 ) -> Result<Expression<SemiSoupyTerm>, String> {
-    let tokens = Tokens::new(&tokens);
-    match expression(tokens) {
-        Ok((remaining, expression)) => {
-            if remaining.is_empty() {
-                Ok(expression)
-            } else {
-                Err(format!("parse was not total. remaining: {:?}", remaining))
-            }
-        }
-        Err(e) => Err(format!("{}", e)),
+    let i = Tokens::new(&tokens);
+    let (i, expression) = expression(i).map_err(|e| format!("{}", e))?;
+    let (i, ()) = skip_token(Token::Newline)(i).map_err(|e| format!("{}", e))?;
+    if i.is_empty() {
+        Ok(expression)
+    } else {
+        Err(format!("parse was not total. remaining: {:?}", i))
     }
 }
 
@@ -183,7 +181,7 @@ pub(super) fn parse_tokens(
 
 #[cfg(test)]
 mod tests {
-    use crate::new_tokenizer::tokenize;
+    use crate::tokenizer::tokenize;
 
     use super::*;
 

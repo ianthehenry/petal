@@ -54,6 +54,14 @@ fn test_split_tokens() {
     );
 }
 
+fn get_initial_scope<'a>() -> Scope<'a> {
+    let mut scope = Scope::new(None);
+    // TODO: fill out all the built-in operators here
+    scope.learn(">=");
+    scope.learn("<=");
+    scope
+}
+
 fn split(terms: Vec<SoupyTerm>, scope: &Scope) -> Vec<SouplessTerm> {
     terms
         .into_iter()
@@ -139,10 +147,13 @@ fn rewrite_block(block: Block<SoupyTerm>, parent_scope: &Scope) -> Block<Souples
         .collect()
 }
 
+#[cfg(test)]
+pub(super) fn split_expression(terms: Vec<SoupyTerm>) -> Vec<SouplessTerm> {
+    let prelude = get_initial_scope();
+    split(terms, &prelude)
+}
+
 pub(super) fn rewrite(block: Block<SoupyTerm>) -> Block<SouplessTerm> {
-    let mut top_level_block = Scope::new(None);
-    // TODO: fill out all the built-in operators here
-    top_level_block.learn(">=");
-    top_level_block.learn("<=");
-    rewrite_block(block, &top_level_block)
+    let prelude = get_initial_scope();
+    rewrite_block(block, &prelude)
 }

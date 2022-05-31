@@ -198,6 +198,22 @@ x = 10
     }
 
     #[test]
+    fn numeric_literals() {
+        k9::snapshot!(test("9223372036854775807"), "9223372036854775807 ␤");
+        k9::snapshot!(test("-9223372036854775807"), "-9223372036854775807 ␤");
+        k9::snapshot!(test("9223372036854775808"), "9223372036854775808 ␤");
+        k9::snapshot!(test("-9223372036854775808"), "-9223372036854775808 ␤");
+    }
+
+    #[test]
+    fn semicolons() {
+        k9::snapshot!(test("[x;y]"), "[ x ; y ] ␤");
+        k9::snapshot!(test("[x;;y]"), "[ x ;; y ] ␤");
+        k9::snapshot!(test("[x;y;;z]"), "[ x ; y ;; z ] ␤");
+        k9::snapshot!(test("[x;; ; ;;;y]"), "[ x ;; ␠ ; ␠ ;;; y ] ␤");
+    }
+
+    #[test]
     fn always_ends_with_newline() {
         k9::snapshot!(test("x=10"), "x = 10 ␤");
     }

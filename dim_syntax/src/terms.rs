@@ -13,7 +13,7 @@ use core::fmt;
 //
 // Finally we do a pass that handles unary negation and implicit multiplication,
 // eliminating spaces and rewriting the Operator type to a normal identifier.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(super) enum SemiSoupyTerm {
     Identifier(String),
     PunctuationSoup(String),
@@ -24,6 +24,7 @@ pub(super) enum SemiSoupyTerm {
     Space,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(super) enum SoupyTerm {
     Identifier(String),
     PunctuationSoup(String),
@@ -33,7 +34,7 @@ pub(super) enum SoupyTerm {
     Space,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(super) enum SouplessTerm {
     Identifier(String),
     Operator(String),
@@ -44,13 +45,12 @@ pub(super) enum SouplessTerm {
     Space,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub(super) enum Term {
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(super) enum SpacelessTerm {
     Identifier(String),
     NumericLiteral(String),
-    Parens(Vec<Term>),
-    Brackets(Vec<Term>),
-    Semicolons(usize),
+    Parens(Vec<SpacelessTerm>),
+    Brackets(Vec<SpacelessTerm>),
 }
 
 fn listed<T: fmt::Display>(terms: &[T], f: &mut fmt::Formatter) -> fmt::Result {
