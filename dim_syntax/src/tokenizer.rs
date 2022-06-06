@@ -2,6 +2,10 @@ use crate::helpers::*;
 use crate::located_token::*;
 use crate::span::*;
 use crate::token::*;
+use nom::bytes::complete::take_while_m_n;
+use nom::combinator::not;
+use nom::combinator::peek;
+use nom::multi::many1;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
@@ -38,12 +42,40 @@ fn numeric_literal(i: Span) -> IResult<Span, LocatedToken> {
     )(i)
 }
 
-fn punctuation_soup(i: Span) -> IResult<Span, LocatedToken> {
-    fn is_operator_punctuation(c: char) -> bool {
-        !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];\"'#_".contains(c))
-    }
+fn is_operator_punctuation(c: char) -> bool {
+    !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];\"'#_".contains(c))
+}
+
+fn punctuation_soup_shared(i: Span) -> IResult<Span, Span> {
+    recognize(many1(alt((
+        recognize(tuple((
+            char('-'),
+            not(peek(take_while_m_n(1, 1, char::is_numeric))),
+        ))),
+        take_while_m_n(1, 1, |c| c != '-' && is_operator_punctuation(c)),
+    ))))(i)
+}
+
+// looks ahead to make sure that hyphens followed by digits are not part of the
+// punctuation soup
+fn punctuation_soup_shy(i: Span) -> IResult<Span, LocatedToken> {
     map(
-        verify(take_while1(is_operator_punctuation), |s: &Span| **s != "="),
+        verify(punctuation_soup_shared, |s: &Span| **s != "="),
+        LocatedToken::build_string(Token::PunctuationSoup),
+    )(i)
+}
+
+// this will *not* look ahead for the initial character, allowing it to steal a
+// hyphen in the case that the punctuation is exactly "-".
+fn punctuation_soup_bold(i: Span) -> IResult<Span, LocatedToken> {
+    map(
+        verify(
+            recognize(tuple((
+                take_while_m_n(1, 1, is_operator_punctuation),
+                opt(punctuation_soup_shared),
+            ))),
+            |s: &Span| **s != "=",
+        ),
         LocatedToken::build_string(Token::PunctuationSoup),
     )(i)
 }
@@ -60,7 +92,7 @@ fn token(i: Span) -> IResult<Span, LocatedToken> {
     alt((
         identifier,
         numeric_literal,
-        punctuation_soup,
+        punctuation_soup_shy,
         semicolons,
         map(tag("("), LocatedToken::build_const(OpenParen)),
         map(tag(")"), LocatedToken::build_const(CloseParen)),
@@ -69,6 +101,42 @@ fn token(i: Span) -> IResult<Span, LocatedToken> {
         map(tag("="), LocatedToken::build_const(EqualSign)),
         map(space1, LocatedToken::build_const(Space)),
     ))(i)
+}
+
+// Okay this is really hairy looking but basically whenever we parse certain
+// tokens we want to *eagerly* look for an operator following it. This allows us
+// to parse the hyphen in "1-2" or "(3)-5" as a minus operator instead of part
+// of the subsequent numeric literal.
+fn tokens(mut input: Span) -> IResult<Span, Vec<LocatedToken>> {
+    let mut result = Vec::new();
+    while let Ok((i, token)) = token(input) {
+        let lookahead = match &token.token {
+            Token::CloseParen
+            | Token::CloseBracket
+            | Token::Identifier(_)
+            | Token::NumericLiteral(_) => true,
+            Token::PunctuationSoup(_)
+            | Token::EqualSign
+            | Token::OpenParen
+            | Token::OpenBracket
+            | Token::Semicolons(_)
+            | Token::Space => false,
+            Token::Newline | Token::Indent | Token::Outdent => panic!(),
+        };
+        result.push(token);
+        if lookahead {
+            match punctuation_soup_bold(i) {
+                Ok((i, token)) => {
+                    result.push(token);
+                    input = i;
+                }
+                Err(_) => input = i,
+            }
+        } else {
+            input = i;
+        }
+    }
+    Ok((input, result))
 }
 
 fn eol(i: Span) -> IResult<Span, ()> {
@@ -121,7 +189,7 @@ pub(super) fn tokenize_lines(i: Span) -> IResult<Span, Vec<LocatedToken>> {
             },
             Ordering::Equal => (),
         }
-        let (i, tokens) = many0(token)(i)?;
+        let (i, tokens) = tokens(i)?;
         result.extend(tokens);
 
         // we always add a newline, even if it isn't present in the source
@@ -163,6 +231,20 @@ mod tests {
             .map(|t: &LocatedToken| format!("{}", t.token))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[test]
+    fn negative_vs_subtraction() {
+        k9::snapshot!(test("1-2"), "1 - 2 ␤");
+        k9::snapshot!(test("1 -2"), "1 ␠ -2 ␤");
+        k9::snapshot!(test("1- 2"), "1 - ␠ 2 ␤");
+        k9::snapshot!(test("1 - 2"), "1 ␠ - ␠ 2 ␤");
+
+        k9::snapshot!(test("1--2"), "1 - -2 ␤");
+        k9::snapshot!(test("1 --2"), "1 ␠ - -2 ␤");
+        k9::snapshot!(test("1- -2"), "1 - ␠ -2 ␤");
+        k9::snapshot!(test("1-- 2"), "1 -- ␠ 2 ␤");
+        k9::snapshot!(test("1 -- 2"), "1 ␠ -- ␠ 2 ␤");
     }
 
     #[test]
