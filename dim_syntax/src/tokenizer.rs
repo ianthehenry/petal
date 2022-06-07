@@ -2,16 +2,12 @@ use crate::helpers::*;
 use crate::located_token::*;
 use crate::span::*;
 use crate::token::*;
-use nom::bytes::complete::take_while_m_n;
-use nom::combinator::not;
-use nom::combinator::peek;
-use nom::multi::many1;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{anychar, char, line_ending, space0, space1},
-    combinator::{eof, map, opt, recognize, verify},
-    multi::many0,
+    combinator::{eof, map, not, opt, peek, recognize, verify},
+    multi::many1,
     sequence::tuple,
     IResult,
 };
@@ -46,33 +42,34 @@ fn is_operator_punctuation(c: char) -> bool {
     !(c.is_whitespace() || c.is_alphabetic() || c.is_numeric() || "()[];\"'#_".contains(c))
 }
 
-fn punctuation_soup_shared(i: Span) -> IResult<Span, Span> {
+fn punctuation_soup_no_greedy_chars(i: Span) -> IResult<Span, Span> {
     recognize(many1(alt((
-        recognize(tuple((
+        ignore(tuple((
             char('-'),
-            not(peek(take_while_m_n(1, 1, char::is_numeric))),
+            not(peek(matching_char(char::is_numeric))),
         ))),
-        take_while_m_n(1, 1, |c| c != '-' && is_operator_punctuation(c)),
+        ignore(matching_char(|c| c != '-' && is_operator_punctuation(c))),
     ))))(i)
 }
 
-// looks ahead to make sure that hyphens followed by digits are not part of the
-// punctuation soup
-fn punctuation_soup_shy(i: Span) -> IResult<Span, LocatedToken> {
+// Matches a series of punctuation characters, but will not include a
+// final hyphen if it's followed by a digit, so that it can parse as
+// a numeric literal instead.
+fn punctuation_soup(i: Span) -> IResult<Span, LocatedToken> {
     map(
-        verify(punctuation_soup_shared, |s: &Span| **s != "="),
+        verify(punctuation_soup_no_greedy_chars, |s: &Span| **s != "="),
         LocatedToken::build_string(Token::PunctuationSoup),
     )(i)
 }
 
-// this will *not* look ahead for the initial character, allowing it to steal a
-// hyphen in the case that the punctuation is exactly "-".
-fn punctuation_soup_bold(i: Span) -> IResult<Span, LocatedToken> {
+// This will *not* look ahead for the initial character, allowing it to steal a
+// hyphen so that "1-2" will parse as "1 - 2" instead of "1 -2".
+fn punctuation_soup_one_greedy_char(i: Span) -> IResult<Span, LocatedToken> {
     map(
         verify(
             recognize(tuple((
-                take_while_m_n(1, 1, is_operator_punctuation),
-                opt(punctuation_soup_shared),
+                matching_char(is_operator_punctuation),
+                opt(punctuation_soup_no_greedy_chars),
             ))),
             |s: &Span| **s != "=",
         ),
@@ -92,7 +89,7 @@ fn token(i: Span) -> IResult<Span, LocatedToken> {
     alt((
         identifier,
         numeric_literal,
-        punctuation_soup_shy,
+        punctuation_soup,
         semicolons,
         map(tag("("), LocatedToken::build_const(OpenParen)),
         map(tag(")"), LocatedToken::build_const(CloseParen)),
@@ -110,7 +107,7 @@ fn token(i: Span) -> IResult<Span, LocatedToken> {
 fn tokens(mut input: Span) -> IResult<Span, Vec<LocatedToken>> {
     let mut result = Vec::new();
     while let Ok((i, token)) = token(input) {
-        let lookahead = match &token.token {
+        let next_hyphen_is_subtraction = match &token.token {
             Token::CloseParen
             | Token::CloseBracket
             | Token::Identifier(_)
@@ -124,8 +121,8 @@ fn tokens(mut input: Span) -> IResult<Span, Vec<LocatedToken>> {
             Token::Newline | Token::Indent | Token::Outdent => panic!(),
         };
         result.push(token);
-        if lookahead {
-            match punctuation_soup_bold(i) {
+        if next_hyphen_is_subtraction {
+            match punctuation_soup_one_greedy_char(i) {
                 Ok((i, token)) => {
                     result.push(token);
                     input = i;
