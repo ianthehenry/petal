@@ -1,4 +1,4 @@
-use crate::terms::{Atom, Builtin, Identifier, RichIdentifier, SpacelessTerm, Term};
+use crate::terms::{Builtin, Identifier, RichIdentifier, SpacelessTerm, Term};
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -107,14 +107,7 @@ macro_rules! bin_impl_lr {
     ($stack:ident, $inner:path, $pos:expr) => {
         let lhs = pop_term($stack);
         let rhs = pop_term($stack);
-        $stack.push(Some((
-            BinaryApplication(
-                Box::new(Term::Implicit($inner)),
-                Box::new(lhs),
-                Box::new(rhs),
-            ),
-            $pos,
-        )));
+        $stack.push(Some((Term::binary(Term::Implicit($inner), lhs, rhs), $pos)));
     };
 }
 
@@ -122,14 +115,7 @@ macro_rules! bin_impl_rl {
     ($stack:ident, $inner:expr, $pos:expr) => {
         let rhs = pop_term($stack);
         let lhs = pop_term($stack);
-        $stack.push(Some((
-            BinaryApplication(
-                Box::new(Term::Implicit($inner)),
-                Box::new(lhs),
-                Box::new(rhs),
-            ),
-            $pos,
-        )));
+        $stack.push(Some((Term::binary(Term::Implicit($inner), lhs, rhs), $pos)));
     };
 }
 
@@ -199,26 +185,19 @@ macro_rules! stack {
 
 fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
     use Arity::*;
-    use Term::*;
 
     loop {
         match &stack[stack.len() - 4..] {
             stack![a1, v] => {
                 let (adverb, result_arity) = pop_adverb(stack);
                 let verb = pop_term(stack);
-                stack.push(Some((
-                    UnaryApplication(Box::new(adverb), Box::new(verb)),
-                    Verb(result_arity),
-                )));
+                stack.push(Some((Term::unary(adverb, verb), Verb(result_arity))));
             }
 
             stack![svn, v1, n] => lookahead!(stack, {
                 let verb = pop_term(stack);
                 let noun = pop_term(stack);
-                stack.push(Some((
-                    UnaryApplication(Box::new(verb), Box::new(noun)),
-                    Noun,
-                )));
+                stack.push(Some((Term::unary(verb, noun), Noun)));
             }),
 
             stack![_, vn, a2, vn] => lookahead!(stack, {
@@ -226,7 +205,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
                 let (conjunction, result_arity) = pop_adverb(stack);
                 let rhs = pop_term(stack);
                 stack.push(Some((
-                    BinaryApplication(Box::new(conjunction), Box::new(lhs), Box::new(rhs)),
+                    Term::binary(conjunction, lhs, rhs),
                     Verb(result_arity),
                 )));
             }),
@@ -235,10 +214,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
                 let lhs = pop_term(stack);
                 let verb = pop_term(stack);
                 let rhs = pop_term(stack);
-                stack.push(Some((
-                    BinaryApplication(Box::new(verb), Box::new(lhs), Box::new(rhs)),
-                    Noun,
-                )));
+                stack.push(Some((Term::binary(verb, lhs, rhs), Noun)));
             }),
 
             stack![svn, n, n] => lookahead!(stack, {
@@ -246,11 +222,11 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
                 let second = pop_term(stack);
 
                 let result = match second {
-                    Tuple(mut terms) => {
+                    Term::Tuple(mut terms) => {
                         terms.push(first);
-                        Tuple(terms)
+                        Term::Tuple(terms)
                     }
-                    _ => Tuple(vec![second, first]),
+                    _ => Term::Tuple(vec![second, first]),
                 };
 
                 stack.push(Some((result, Noun)));
@@ -318,9 +294,13 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
             }
 
             Some(term) => match term {
-                SpacelessTerm::NumericLiteral(num) => frame
-                    .stack
-                    .push(Some((Term::Atom(Atom::NumericLiteral(num)), Noun))),
+                SpacelessTerm::NumericLiteral(num) => {
+                    frame.stack.push(Some((Term::num(num), Noun)))
+                }
+                SpacelessTerm::Coefficient(num) => frame.stack.push(Some((
+                    Term::unary(Term::Implicit(Builtin::Scale), Term::num(num)),
+                    Verb(Arity::Unary),
+                ))),
                 SpacelessTerm::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
                 SpacelessTerm::Parens(terms) => {
                     call_stack.push(ParseFrame::new(terms, wrap_parens))
@@ -416,13 +396,8 @@ impl Scope {
     fn add_builtin(&mut self, name: &str, pos: PartOfSpeech) {
         let name = name.to_string();
         let id = self.learn_name(name.clone());
-        self.complete.insert(
-            id,
-            (
-                Term::Atom(Atom::Identifier(RichIdentifier::new(id, name))),
-                pos,
-            ),
-        );
+        self.complete
+            .insert(id, (Term::id(RichIdentifier::new(id, name)), pos));
     }
 
     fn begin(&mut self, assignment: Assignment) {
@@ -471,11 +446,7 @@ impl Scope {
         let rich_id = RichIdentifier::new(id, self.name_of_id(&id));
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for mut parse in parses {
-                provide(
-                    &mut parse.call_stack,
-                    Term::Atom(Atom::Identifier(rich_id.clone())),
-                    pos,
-                );
+                provide(&mut parse.call_stack, Term::id(rich_id.clone()), pos);
                 self.unblocked.push(parse);
             }
         }
@@ -599,10 +570,7 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
                                 call_stack = stack;
                                 provide(
                                     &mut call_stack,
-                                    Term::Atom(Atom::Identifier(RichIdentifier::new(
-                                        prereq_id,
-                                        prereq_name,
-                                    ))),
+                                    Term::id(RichIdentifier::new(prereq_id, prereq_name)),
                                     pos,
                                 );
                             }
@@ -670,11 +638,7 @@ mod tests {
                         "x" | "y" => Noun,
                         _ => panic!("unknown identifier"),
                     };
-                    provide(
-                        &mut call_stack,
-                        Term::Atom(Atom::Identifier(RichIdentifier::new(0, name))),
-                        pos,
-                    );
+                    provide(&mut call_stack, Term::id(RichIdentifier::new(0, name)), pos);
                 }
             }
         }
@@ -853,12 +817,11 @@ mod tests {
         k9::snapshot!(test("flip fold"), "incomplete parse: a1:fold a1:flip");
     }
 
-    fn id(name: &str) -> Term {
-        Term::Atom(Atom::Identifier(RichIdentifier::new(0, name.to_string())))
-    }
-
     #[test]
     fn test_partial_parsing() {
+        fn id(name: &str) -> Term {
+            Term::id(RichIdentifier::new(0, name.to_string()))
+        }
         let call_stack = begin_parse("x + foo");
         let (result, mut call_stack) = advance(call_stack);
         k9::snapshot!(result, "awaiting foo");
@@ -931,14 +894,13 @@ mod tests {
             Implicit(x) => Implicit(*x),
             Tuple(terms) => Tuple(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
             Brackets(terms) => Brackets(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
-            UnaryApplication(term1, term2) => UnaryApplication(
-                Box::new(rewrite_atoms(&*term1, f)),
-                Box::new(rewrite_atoms(&*term2, f)),
-            ),
-            BinaryApplication(term1, term2, term3) => BinaryApplication(
-                Box::new(rewrite_atoms(&*term1, f)),
-                Box::new(rewrite_atoms(&*term2, f)),
-                Box::new(rewrite_atoms(&*term3, f)),
+            UnaryApplication(term1, term2) => {
+                unary(rewrite_atoms(&*term1, f), rewrite_atoms(&*term2, f))
+            }
+            BinaryApplication(term1, term2, term3) => binary(
+                rewrite_atoms(&*term1, f),
+                rewrite_atoms(&*term2, f),
+                rewrite_atoms(&*term3, f),
             ),
         }
     }

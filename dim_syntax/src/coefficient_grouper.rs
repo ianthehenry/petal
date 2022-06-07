@@ -19,27 +19,35 @@ pub(super) fn group(terms: Vec<SouplessTerm>) -> Vec<SpacelessTerm> {
     use SouplessTerm::*;
 
     while let Some(next) = iterator.next() {
-        match (&next, iterator.peek()) {
-            (MinusOperator, Some(MinusOperator | Operator(_) | Space) | None) => {
-                result.push(convert(next))
-            }
-            (MinusOperator, Some(NumericLiteral(_))) => {
-                panic!("this should have parsed as a single thing")
-            }
+        match (next, iterator.peek()) {
+            (
+                minus @ MinusOperator,
+                Some(MinusOperator | Operator(_) | Space | NumericLiteral(_)) | None,
+            ) => result.push(convert(minus)),
             (MinusOperator, Some(Identifier(_) | Parens(_) | Brackets(_))) => {
                 result.push(SpacelessTerm::Parens(vec![
-                    SpacelessTerm::Identifier("neg".to_string()),
+                    SpacelessTerm::Coefficient("-1".to_string()),
+                    convert(iterator.next().unwrap()),
+                ]))
+            }
+            (
+                num @ NumericLiteral(_),
+                Some(MinusOperator | Operator(_) | Space | NumericLiteral(_)) | None,
+            ) => result.push(convert(num)),
+            (NumericLiteral(c), Some(Identifier(_) | Parens(_) | Brackets(_))) => {
+                result.push(SpacelessTerm::Parens(vec![
+                    SpacelessTerm::Coefficient(c),
                     convert(iterator.next().unwrap()),
                 ]))
             }
             (SouplessTerm::Space, _) => (),
-            (NumericLiteral(_) | Identifier(_) | Parens(_) | Brackets(_), lookahead) => {
-                result.push(convert(next));
+            (term @ (Identifier(_) | Parens(_) | Brackets(_)), lookahead) => {
+                result.push(convert(term));
                 if let Some(SouplessTerm::MinusOperator) = lookahead {
                     result.push(convert(iterator.next().unwrap()))
                 }
             }
-            (Operator(_), _) => result.push(convert(next)),
+            (op @ Operator(_), _) => result.push(convert(op)),
         }
     }
     result
@@ -68,6 +76,7 @@ mod tests {
         match term {
             SpacelessTerm::Identifier(id) => id,
             SpacelessTerm::NumericLiteral(id) => id,
+            SpacelessTerm::Coefficient(c) => format!("<scale {}>", c),
             SpacelessTerm::Parens(terms) => delimited("(", terms, ")"),
             SpacelessTerm::Brackets(terms) => delimited("[", terms, "]"),
         }
@@ -82,21 +91,69 @@ mod tests {
     }
 
     #[test]
-    fn test_group() {
-        k9::snapshot!(test("-x"), "(neg x)");
-        k9::snapshot!(test("--x"), "- (neg x)");
-        k9::snapshot!(test("- x"), "- x");
-        k9::snapshot!(test("- -x"), "- (neg x)");
+    fn ambiguous_subtraction_numbers() {
+        k9::snapshot!(test("1-2"), "1 - 2");
+        k9::snapshot!(test("1 -2"), "1 -2");
+        k9::snapshot!(test("1- 2"), "1 - 2");
+        k9::snapshot!(test("1 - 2"), "1 - 2");
+
+        k9::snapshot!(test("1--2"), "1 - -2");
+        k9::snapshot!(test("1 --2"), "1 - -2");
+        k9::snapshot!(test("1- -2"), "1 - -2");
+        k9::snapshot!(test("1-- 2"), "1 - - 2");
+        k9::snapshot!(test("1 -- 2"), "1 - - 2");
+    }
+
+    #[test]
+    fn ambiguous_subtraction_identifiers() {
         k9::snapshot!(test("x-y"), "x - y");
-        k9::snapshot!(test("-x-y"), "(neg x) (neg y)");
-        k9::snapshot!(test("x--y"), "x - (neg y)");
-        k9::snapshot!(test("-x--y"), "(neg x) - (neg y)");
-        k9::snapshot!(test("--x--y"), "- (neg x) - (neg y)");
-        k9::snapshot!(test("x*-y"), "x * (neg y)");
+        k9::snapshot!(test("x -y"), "x (<scale -1> y)");
+        k9::snapshot!(test("x- y"), "x - y");
+        k9::snapshot!(test("x - y"), "x - y");
+
+        k9::snapshot!(test("x--y"), "x - (<scale -1> y)");
+        k9::snapshot!(test("x --y"), "x - (<scale -1> y)");
+        k9::snapshot!(test("x- -y"), "x - (<scale -1> y)");
+        k9::snapshot!(test("x-- y"), "x - - y");
+        k9::snapshot!(test("x -- y"), "x - - y");
+    }
+
+    #[test]
+    fn ambiguous_subtraction_parens_and_brackets() {
+        k9::snapshot!(test("(x)-(y)"), "(x) - (y)");
+        k9::snapshot!(test("(x) -(y)"), "(x) (<scale -1> (y))");
+
+        k9::snapshot!(test("[x]-[y]"), "[x] - [y]");
+        k9::snapshot!(test("[x] -[y]"), "[x] (<scale -1> [y])");
+    }
+
+    #[test]
+    fn test_minus() {
+        k9::snapshot!(test("-x"), "(<scale -1> x)");
+        k9::snapshot!(test("--x"), "- (<scale -1> x)");
+        k9::snapshot!(test("- x"), "- x");
+        k9::snapshot!(test("- -x"), "- (<scale -1> x)");
+        k9::snapshot!(test("x-y"), "x - y");
+        k9::snapshot!(test("-x-y"), "(<scale -1> x) (<scale -1> y)");
+        k9::snapshot!(test("x--y"), "x - (<scale -1> y)");
+        k9::snapshot!(test("-x--y"), "(<scale -1> x) - (<scale -1> y)");
+        k9::snapshot!(test("--x--y"), "- (<scale -1> x) - (<scale -1> y)");
+        k9::snapshot!(test("x*-y"), "x * (<scale -1> y)");
         k9::snapshot!(test("x-*y"), "x - * y");
-        k9::snapshot!(test("x* -y"), "x * (neg y)");
-        k9::snapshot!(test("x*(-y)"), "x * ((neg y))");
-        k9::snapshot!(test("-(x)"), "(neg (x))");
+        k9::snapshot!(test("x* -y"), "x * (<scale -1> y)");
+        k9::snapshot!(test("x*(-y)"), "x * ((<scale -1> y))");
+        k9::snapshot!(test("-(x)"), "(<scale -1> (x))");
+        k9::snapshot!(test("-(-x)"), "(<scale -1> ((<scale -1> x)))");
+    }
+
+    #[test]
+    fn test_coefficients() {
+        k9::snapshot!(test("2x"), "(<scale 2> x)");
+        k9::snapshot!(test("2 x"), "2 x");
+        k9::snapshot!(test("2(3)"), "(<scale 2> (3))");
+        k9::snapshot!(test("2 (3)"), "2 (3)");
+        k9::snapshot!(test("2(3)4"), "(<scale 2> (3)) 4");
+        k9::snapshot!(test("2(3)4(5)"), "(<scale 2> (3)) (<scale 4> (5))");
     }
 }
 

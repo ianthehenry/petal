@@ -53,6 +53,7 @@ pub(super) enum SouplessTerm {
 pub(super) enum SpacelessTerm {
     Identifier(String),
     NumericLiteral(String),
+    Coefficient(String),
     Parens(Vec<SpacelessTerm>),
     Brackets(Vec<SpacelessTerm>),
 }
@@ -70,8 +71,27 @@ pub enum Term {
     BinaryApplication(Box<Term>, Box<Term>, Box<Term>),
 }
 
+impl Term {
+    pub(super) fn unary(f: Term, x: Term) -> Self {
+        Term::UnaryApplication(Box::new(f), Box::new(x))
+    }
+
+    pub(super) fn binary(f: Term, x: Term, y: Term) -> Self {
+        Term::BinaryApplication(Box::new(f), Box::new(x), Box::new(y))
+    }
+
+    pub(super) fn num(num: String) -> Self {
+        Term::Atom(Atom::NumericLiteral(num))
+    }
+
+    pub(super) fn id(id: RichIdentifier) -> Self {
+        Term::Atom(Atom::Identifier(id))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Builtin {
+    Scale,
     PartialApplicationLeft,
     PartialApplicationRight,
     Compose,
@@ -184,6 +204,7 @@ impl fmt::Display for Builtin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Builtin::*;
         match self {
+            Scale => write!(f, "scale"),
             PartialApplicationLeft => write!(f, "lhs"),
             PartialApplicationRight => write!(f, "rhs"),
             Compose => write!(f, "comp"),
