@@ -88,24 +88,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e25ea47919b1560c4e3b7fe0aaab9becf5b84a10325ddf7db0f0ba5e1026499"
 
 [[package]]
-name = "dim"
-version = "0.1.0"
-dependencies = [
- "dim_syntax",
- "k9",
- "rug",
- "structopt",
-]
-
-[[package]]
-name = "dim_syntax"
-version = "0.1.0"
-dependencies = [
- "nom",
- "nom_locate",
-]
-
-[[package]]
 name = "gmp-mpfr-sys"
 version = "1.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -191,6 +173,24 @@ dependencies = [
  "bytecount",
  "memchr",
  "nom",
+]
+
+[[package]]
+name = "petal"
+version = "0.1.0"
+dependencies = [
+ "k9",
+ "petal_syntax",
+ "rug",
+ "structopt",
+]
+
+[[package]]
+name = "petal_syntax"
+version = "0.1.0"
+dependencies = [
+ "nom",
+ "nom_locate",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
-use dim::array::Array;
-use dim::eval::ranked_add;
+use petal::array::Array;
+use petal::eval::ranked_add;
 use k9;
 
 // similar to J's i. function

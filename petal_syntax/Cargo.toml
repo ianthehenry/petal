@@ -1,5 +1,5 @@
 [package]
-name = "dim_syntax"
+name = "petal_syntax"
 version = "0.1.0"
 edition = "2021"
 

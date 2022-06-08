@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 use structopt::StructOpt;
 
 #[derive(StructOpt)]
-#[structopt(about = "dim array language")]
+#[structopt(about = "my pet array language")]
 enum Command {
     Run {
         #[structopt(parse(from_os_str))]
@@ -21,7 +21,7 @@ fn main() {
             println!("{:?} {}", filenames, inline);
             for filename in filenames {
                 let contents = fs::read_to_string(filename).expect("unable to read file");
-                dim_syntax::parse(&contents).unwrap();
+                petal_syntax::parse(&contents).unwrap();
             }
         }
         Command::Eval { expression } => println!("{}", expression),
