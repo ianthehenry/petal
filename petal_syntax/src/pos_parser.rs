@@ -1,4 +1,5 @@
-use crate::terms::{Builtin, Identifier, RichIdentifier, SpacelessTerm, Term};
+use crate::expression::{Builtin, Expression, Identifier, RichIdentifier};
+use crate::terms::Term;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -17,7 +18,7 @@ use PartOfSpeech::*;
 
 #[derive(Debug)]
 pub enum ParseError {
-    DidNotFullyReduce(Vec<(Term, PartOfSpeech)>),
+    DidNotFullyReduce(Vec<(Expression, PartOfSpeech)>),
     ArrayLiteralNotNoun,
     BadReference(Identifier),
 }
@@ -36,16 +37,16 @@ impl fmt::Display for PartOfSpeech {
 
 #[derive(Debug)]
 struct ParseFrame {
-    stack: Vec<Option<(Term, PartOfSpeech)>>,
-    input: Vec<SpacelessTerm>,
+    stack: Vec<Option<(Expression, PartOfSpeech)>>,
+    input: Vec<Term>,
     end_reached: bool,
-    finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>,
+    finish: fn(Expression, PartOfSpeech) -> Result<Expression, ParseError>,
 }
 
 impl ParseFrame {
     fn new(
-        input: Vec<SpacelessTerm>,
-        finish: fn(Term, PartOfSpeech) -> Result<Term, ParseError>,
+        input: Vec<Term>,
+        finish: fn(Expression, PartOfSpeech) -> Result<Expression, ParseError>,
     ) -> Self {
         Self {
             input,
@@ -57,37 +58,37 @@ impl ParseFrame {
 }
 
 enum ParseResult {
-    Complete(Term, PartOfSpeech),
+    Complete(Expression, PartOfSpeech),
     Partial(String, Vec<ParseFrame>),
 }
 
-fn identity(term: Term, _: PartOfSpeech) -> Result<Term, ParseError> {
+fn identity(term: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
     Ok(term)
 }
 
-fn wrap_parens(term: Term, _: PartOfSpeech) -> Result<Term, ParseError> {
-    Ok(Term::Parens(Box::new(term)))
+fn wrap_parens(term: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
+    Ok(Expression::Parens(Box::new(term)))
 }
 
-fn wrap_brackets(term: Term, pos: PartOfSpeech) -> Result<Term, ParseError> {
+fn wrap_brackets(term: Expression, pos: PartOfSpeech) -> Result<Expression, ParseError> {
     match pos {
         Noun => {
             let terms = match term {
-                Term::Tuple(terms) => terms,
+                Expression::Tuple(terms) => terms,
                 term => vec![term],
             };
-            Ok(Term::Brackets(terms))
+            Ok(Expression::Brackets(terms))
         }
         _ => Err(ParseError::ArrayLiteralNotNoun),
     }
 }
 
-fn pop_term(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> Term {
+fn pop_term(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) -> Expression {
     let (term, _) = stack.pop().unwrap().unwrap();
     term
 }
 
-fn pop_adverb(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) -> (Term, Arity) {
+fn pop_adverb(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) -> (Expression, Arity) {
     let (term, pos) = stack.pop().unwrap().unwrap();
     match pos {
         Adverb(_, result_arity) => (term, result_arity),
@@ -107,7 +108,10 @@ macro_rules! bin_impl_lr {
     ($stack:ident, $inner:path, $pos:expr) => {
         let lhs = pop_term($stack);
         let rhs = pop_term($stack);
-        $stack.push(Some((Term::binary(Term::Implicit($inner), lhs, rhs), $pos)));
+        $stack.push(Some((
+            Expression::binary(Expression::Implicit($inner), lhs, rhs),
+            $pos,
+        )));
     };
 }
 
@@ -115,7 +119,10 @@ macro_rules! bin_impl_rl {
     ($stack:ident, $inner:expr, $pos:expr) => {
         let rhs = pop_term($stack);
         let lhs = pop_term($stack);
-        $stack.push(Some((Term::binary(Term::Implicit($inner), lhs, rhs), $pos)));
+        $stack.push(Some((
+            Expression::binary(Expression::Implicit($inner), lhs, rhs),
+            $pos,
+        )));
     };
 }
 
@@ -183,7 +190,7 @@ macro_rules! stack {
     };
 }
 
-fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
+fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
     use Arity::*;
 
     loop {
@@ -191,13 +198,13 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
             stack![a1, v] => {
                 let (adverb, result_arity) = pop_adverb(stack);
                 let verb = pop_term(stack);
-                stack.push(Some((Term::unary(adverb, verb), Verb(result_arity))));
+                stack.push(Some((Expression::unary(adverb, verb), Verb(result_arity))));
             }
 
             stack![svn, v1, n] => lookahead!(stack, {
                 let verb = pop_term(stack);
                 let noun = pop_term(stack);
-                stack.push(Some((Term::unary(verb, noun), Noun)));
+                stack.push(Some((Expression::unary(verb, noun), Noun)));
             }),
 
             stack![_, vn, a2, vn] => lookahead!(stack, {
@@ -205,7 +212,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
                 let (conjunction, result_arity) = pop_adverb(stack);
                 let rhs = pop_term(stack);
                 stack.push(Some((
-                    Term::binary(conjunction, lhs, rhs),
+                    Expression::binary(conjunction, lhs, rhs),
                     Verb(result_arity),
                 )));
             }),
@@ -214,7 +221,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
                 let lhs = pop_term(stack);
                 let verb = pop_term(stack);
                 let rhs = pop_term(stack);
-                stack.push(Some((Term::binary(verb, lhs, rhs), Noun)));
+                stack.push(Some((Expression::binary(verb, lhs, rhs), Noun)));
             }),
 
             stack![svn, n, n] => lookahead!(stack, {
@@ -222,11 +229,11 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
                 let second = pop_term(stack);
 
                 let result = match second {
-                    Term::Tuple(mut terms) => {
+                    Expression::Tuple(mut terms) => {
                         terms.push(first);
-                        Term::Tuple(terms)
+                        Expression::Tuple(terms)
                     }
-                    _ => Term::Tuple(vec![second, first]),
+                    _ => Expression::Tuple(vec![second, first]),
                 };
 
                 stack.push(Some((result, Noun)));
@@ -257,7 +264,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Term, PartOfSpeech)>>) {
     }
 }
 
-pub(super) fn just_parse(terms: Vec<SpacelessTerm>) -> Result<(Term, PartOfSpeech), ParseError> {
+pub(super) fn just_parse(terms: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
     let frame = ParseFrame::new(terms, identity);
     match parse(vec![frame])? {
         ParseResult::Complete(term, pos) => Ok((term, pos)),
@@ -277,7 +284,7 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
                     let frame = call_stack.pop().unwrap();
                     let without_sentinels = frame.stack.into_iter().flatten().collect::<Vec<_>>();
                     let (term, pos) = match without_sentinels.len() {
-                        0 => Ok((Term::Tuple(vec![]), Noun)),
+                        0 => Ok((Expression::Tuple(vec![]), Noun)),
                         1 => Ok(without_sentinels.into_iter().next().unwrap()),
                         _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
                     }?;
@@ -294,20 +301,14 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
             }
 
             Some(term) => match term {
-                SpacelessTerm::NumericLiteral(num) => {
-                    frame.stack.push(Some((Term::num(num), Noun)))
-                }
-                SpacelessTerm::Coefficient(num) => frame.stack.push(Some((
-                    Term::unary(Term::Implicit(Builtin::Scale), Term::num(num)),
+                Term::NumericLiteral(num) => frame.stack.push(Some((Expression::num(num), Noun))),
+                Term::Coefficient(num) => frame.stack.push(Some((
+                    Expression::unary(Expression::Implicit(Builtin::Scale), Expression::num(num)),
                     Verb(Arity::Unary),
                 ))),
-                SpacelessTerm::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
-                SpacelessTerm::Parens(terms) => {
-                    call_stack.push(ParseFrame::new(terms, wrap_parens))
-                }
-                SpacelessTerm::Brackets(terms) => {
-                    call_stack.push(ParseFrame::new(terms, wrap_brackets))
-                }
+                Term::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
+                Term::Parens(terms) => call_stack.push(ParseFrame::new(terms, wrap_parens)),
+                Term::Brackets(terms) => call_stack.push(ParseFrame::new(terms, wrap_brackets)),
             },
         };
     }
@@ -315,14 +316,14 @@ fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
 
 struct Assignment {
     name: String,
-    expression: Vec<SpacelessTerm>,
+    expression: Vec<Term>,
 }
 
 // "partial" means that it's waiting for an identifier that has not been seen at
 // all yet. "semipartial" means that we know *which* identifier we're waiting
 // for, but we don't know its part of speech yet.
 enum ParseStatus {
-    Complete(Term, PartOfSpeech),
+    Complete(Expression, PartOfSpeech),
     Partial(String, Vec<ParseFrame>),
     Semipartial(Identifier, Vec<ParseFrame>),
     Failed(ParseError),
@@ -345,7 +346,7 @@ struct Scope {
 
     blocked_on_name: HashMap<String, Vec<ParseOperation>>,
     blocked_on_id: HashMap<Identifier, Vec<ParseOperation>>,
-    complete: HashMap<Identifier, (Term, PartOfSpeech)>,
+    complete: HashMap<Identifier, (Expression, PartOfSpeech)>,
     failed: HashMap<Identifier, ParseError>,
     unblocked: Vec<ParseOperation>,
 
@@ -372,7 +373,7 @@ enum LookupResult<'a> {
     Unknown,
     Pending(Identifier),
     Failed(Identifier, &'a ParseError),
-    Complete(Identifier, &'a Term, PartOfSpeech),
+    Complete(Identifier, &'a Expression, PartOfSpeech),
 }
 
 impl Scope {
@@ -397,7 +398,7 @@ impl Scope {
         let name = name.to_string();
         let id = self.learn_name(name.clone());
         self.complete
-            .insert(id, (Term::id(RichIdentifier::new(id, name)), pos));
+            .insert(id, (Expression::id(RichIdentifier::new(id, name)), pos));
     }
 
     fn begin(&mut self, assignment: Assignment) {
@@ -442,11 +443,11 @@ impl Scope {
         }
     }
 
-    fn complete(&mut self, id: Identifier, term: Term, pos: PartOfSpeech) {
+    fn complete(&mut self, id: Identifier, term: Expression, pos: PartOfSpeech) {
         let rich_id = RichIdentifier::new(id, self.name_of_id(&id));
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for mut parse in parses {
-                provide(&mut parse.call_stack, Term::id(rich_id.clone()), pos);
+                provide(&mut parse.call_stack, Expression::id(rich_id.clone()), pos);
                 self.unblocked.push(parse);
             }
         }
@@ -570,7 +571,7 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
                                 call_stack = stack;
                                 provide(
                                     &mut call_stack,
-                                    Term::id(RichIdentifier::new(prereq_id, prereq_name)),
+                                    Expression::id(RichIdentifier::new(prereq_id, prereq_name)),
                                     pos,
                                 );
                             }
@@ -596,7 +597,7 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
     scope
 }
 
-fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
+fn provide(call_stack: &mut Vec<ParseFrame>, term: Expression, pos: PartOfSpeech) {
     let top_frame = call_stack.last_mut().unwrap();
     top_frame.stack.push(Some((term, pos)));
 }
@@ -604,13 +605,14 @@ fn provide(call_stack: &mut Vec<ParseFrame>, term: Term, pos: PartOfSpeech) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expression::Atom;
 
-    fn show_annotated_term(annotated_term: &(Term, PartOfSpeech)) -> String {
+    fn show_annotated_term(annotated_term: &(Expression, PartOfSpeech)) -> String {
         let (term, pos) = annotated_term;
         format!("{}:{}", pos, term)
     }
 
-    fn show_annotated_terms(terms: Vec<(Term, PartOfSpeech)>) -> String {
+    fn show_annotated_terms(terms: Vec<(Expression, PartOfSpeech)>) -> String {
         terms
             .iter()
             .map(show_annotated_term)
@@ -618,7 +620,7 @@ mod tests {
             .join(" ")
     }
 
-    fn parse_to_completion(input: Vec<SpacelessTerm>) -> Result<(Term, PartOfSpeech), ParseError> {
+    fn parse_to_completion(input: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
         use ParseResult::*;
 
         let frame = ParseFrame::new(input, identity);
@@ -638,13 +640,17 @@ mod tests {
                         "x" | "y" => Noun,
                         _ => panic!("unknown identifier"),
                     };
-                    provide(&mut call_stack, Term::id(RichIdentifier::new(0, name)), pos);
+                    provide(
+                        &mut call_stack,
+                        Expression::id(RichIdentifier::new(0, name)),
+                        pos,
+                    );
                 }
             }
         }
     }
 
-    fn preparse(input: &str) -> Vec<SpacelessTerm> {
+    fn preparse(input: &str) -> Vec<Term> {
         let tokens = crate::tokenizer::tokenize(input);
         let terms = crate::statement_parser::parse_expression(tokens).unwrap();
         let terms = crate::semicolons::resolve_expression(terms);
@@ -819,8 +825,8 @@ mod tests {
 
     #[test]
     fn test_partial_parsing() {
-        fn id(name: &str) -> Term {
-            Term::id(RichIdentifier::new(0, name.to_string()))
+        fn id(name: &str) -> Expression {
+            Expression::id(RichIdentifier::new(0, name.to_string()))
         }
         let call_stack = begin_parse("x + foo");
         let (result, mut call_stack) = advance(call_stack);
@@ -880,14 +886,14 @@ mod tests {
 
     #[derive(Debug)]
     enum AssignmentStatus<'a> {
-        Complete(&'a Term, &'a PartOfSpeech),
+        Complete(&'a Expression, &'a PartOfSpeech),
         Failed(&'a ParseError),
         Cyclic(&'a Identifier),
         Pending(&'a str),
     }
 
-    fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Term, f: &mut F) -> Term {
-        use Term::*;
+    fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Expression, f: &mut F) -> Expression {
+        use Expression::*;
         match term {
             Atom(a) => Atom(f(a)),
             Parens(term) => Parens(Box::new(rewrite_atoms(&*term, f))),
@@ -895,9 +901,9 @@ mod tests {
             Tuple(terms) => Tuple(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
             Brackets(terms) => Brackets(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
             UnaryApplication(term1, term2) => {
-                unary(rewrite_atoms(&*term1, f), rewrite_atoms(&*term2, f))
+                Expression::unary(rewrite_atoms(&*term1, f), rewrite_atoms(&*term2, f))
             }
-            BinaryApplication(term1, term2, term3) => binary(
+            BinaryApplication(term1, term2, term3) => Expression::binary(
                 rewrite_atoms(&*term1, f),
                 rewrite_atoms(&*term2, f),
                 rewrite_atoms(&*term3, f),

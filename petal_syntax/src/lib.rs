@@ -1,4 +1,5 @@
 mod coefficient_grouper;
+pub mod expression;
 mod helpers;
 mod located_token;
 mod location;
@@ -13,10 +14,10 @@ pub mod token;
 pub mod tokenizer;
 mod tokens;
 
+use expression::Expression;
 use pos_parser::{ParseError, PartOfSpeech};
-use terms::Term;
 
-pub fn parse(input: &str) -> Result<(Term, PartOfSpeech), ParseError> {
+pub fn parse(input: &str) -> Result<(Expression, PartOfSpeech), ParseError> {
     let tokens = tokenizer::tokenize(input);
     let terms = statement_parser::parse_expression(tokens).unwrap();
     let terms = semicolons::resolve_expression(terms);

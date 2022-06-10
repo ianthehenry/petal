@@ -1,19 +1,19 @@
 use crate::statement::*;
-use crate::terms::{SouplessTerm, SpacelessTerm};
+use crate::terms::{SouplessTerm, Term};
 
-fn convert(t: SouplessTerm) -> SpacelessTerm {
+fn convert(t: SouplessTerm) -> Term {
     match t {
-        SouplessTerm::Identifier(s) => SpacelessTerm::Identifier(s),
-        SouplessTerm::Operator(s) => SpacelessTerm::Identifier(s),
-        SouplessTerm::NumericLiteral(s) => SpacelessTerm::NumericLiteral(s),
-        SouplessTerm::Parens(terms) => SpacelessTerm::Parens(group(terms)),
-        SouplessTerm::Brackets(terms) => SpacelessTerm::Brackets(group(terms)),
+        SouplessTerm::Identifier(s) => Term::Identifier(s),
+        SouplessTerm::Operator(s) => Term::Identifier(s),
+        SouplessTerm::NumericLiteral(s) => Term::NumericLiteral(s),
+        SouplessTerm::Parens(terms) => Term::Parens(group(terms)),
+        SouplessTerm::Brackets(terms) => Term::Brackets(group(terms)),
         SouplessTerm::Space => panic!(),
-        SouplessTerm::MinusOperator => SpacelessTerm::Identifier("-".to_string()),
+        SouplessTerm::MinusOperator => Term::Identifier("-".to_string()),
     }
 }
 
-pub(super) fn group(terms: Vec<SouplessTerm>) -> Vec<SpacelessTerm> {
+pub(super) fn group(terms: Vec<SouplessTerm>) -> Vec<Term> {
     let mut result = vec![];
     let mut iterator = terms.into_iter().peekable();
     use SouplessTerm::*;
@@ -25,8 +25,8 @@ pub(super) fn group(terms: Vec<SouplessTerm>) -> Vec<SpacelessTerm> {
                 Some(MinusOperator | Operator(_) | Space | NumericLiteral(_)) | None,
             ) => result.push(convert(minus)),
             (MinusOperator, Some(Identifier(_) | Parens(_) | Brackets(_))) => {
-                result.push(SpacelessTerm::Parens(vec![
-                    SpacelessTerm::Coefficient("-1".to_string()),
+                result.push(Term::Parens(vec![
+                    Term::Coefficient("-1".to_string()),
                     convert(iterator.next().unwrap()),
                 ]))
             }
@@ -35,8 +35,8 @@ pub(super) fn group(terms: Vec<SouplessTerm>) -> Vec<SpacelessTerm> {
                 Some(MinusOperator | Operator(_) | Space | NumericLiteral(_)) | None,
             ) => result.push(convert(num)),
             (NumericLiteral(c), Some(Identifier(_) | Parens(_) | Brackets(_))) => {
-                result.push(SpacelessTerm::Parens(vec![
-                    SpacelessTerm::Coefficient(c),
+                result.push(Term::Parens(vec![
+                    Term::Coefficient(c),
                     convert(iterator.next().unwrap()),
                 ]))
             }
@@ -57,7 +57,7 @@ pub(super) fn group(terms: Vec<SouplessTerm>) -> Vec<SpacelessTerm> {
 mod tests {
     use super::*;
 
-    fn delimited(start: &str, terms: Vec<SpacelessTerm>, end: &str) -> String {
+    fn delimited(start: &str, terms: Vec<Term>, end: &str) -> String {
         let mut result = start.to_string();
         let mut first = true;
         for term in terms {
@@ -72,13 +72,13 @@ mod tests {
         result
     }
 
-    fn show_term(term: SpacelessTerm) -> String {
+    fn show_term(term: Term) -> String {
         match term {
-            SpacelessTerm::Identifier(id) => id,
-            SpacelessTerm::NumericLiteral(id) => id,
-            SpacelessTerm::Coefficient(c) => format!("<scale {}>", c),
-            SpacelessTerm::Parens(terms) => delimited("(", terms, ")"),
-            SpacelessTerm::Brackets(terms) => delimited("[", terms, "]"),
+            Term::Identifier(id) => id,
+            Term::NumericLiteral(id) => id,
+            Term::Coefficient(c) => format!("<scale {}>", c),
+            Term::Parens(terms) => delimited("(", terms, ")"),
+            Term::Brackets(terms) => delimited("[", terms, "]"),
         }
     }
 
@@ -157,7 +157,7 @@ mod tests {
     }
 }
 
-pub(super) fn rewrite(block: Block<SouplessTerm>) -> Block<SpacelessTerm> {
+pub(super) fn rewrite(block: Block<SouplessTerm>) -> Block<Term> {
     use Statement::*;
     block
         .into_iter()

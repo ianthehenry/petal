@@ -71,7 +71,7 @@ fn maybe_space(i: Tokens) -> UnitResult {
 //          2)
 //
 // And replace newlines with spaces and stuff.
-fn inner_expressions(i: Tokens) -> ParseResult<Expression<SemiSoupyTerm>> {
+fn inner_expressions(i: Tokens) -> ParseResult<Terms<SemiSoupyTerm>> {
     many0(term)(i)
 }
 
@@ -101,7 +101,7 @@ fn term(i: Tokens) -> ParseResult<SemiSoupyTerm> {
     ))(i)
 }
 
-fn expression(i: Tokens) -> ParseResult<Expression<SemiSoupyTerm>> {
+fn expression(i: Tokens) -> ParseResult<Terms<SemiSoupyTerm>> {
     many1(term)(i)
 }
 
@@ -149,9 +149,7 @@ fn statements(i: Tokens) -> ParseResult<Vec<Statement<SemiSoupyTerm>>> {
 
 // TODO: this should be test when i'm not using it in main anymore
 // #[cfg(test)]
-pub(super) fn parse_expression(
-    tokens: Vec<LocatedToken>,
-) -> Result<Expression<SemiSoupyTerm>, String> {
+pub(super) fn parse_expression(tokens: Vec<LocatedToken>) -> Result<Terms<SemiSoupyTerm>, String> {
     let i = Tokens::new(&tokens);
     let (i, expression) = expression(i).map_err(|e| format!("{}", e))?;
     let (i, ()) = skip_token(Token::Newline)(i).map_err(|e| format!("{}", e))?;
@@ -185,7 +183,7 @@ mod tests {
 
     use super::*;
 
-    fn show_expression(expression: &Expression<SemiSoupyTerm>) -> String {
+    fn show_expression(expression: &Terms<SemiSoupyTerm>) -> String {
         expression
             .iter()
             .map(|t: &SemiSoupyTerm| format!("{}", t))
