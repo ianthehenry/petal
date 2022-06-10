@@ -59,7 +59,7 @@ mod tests {
 
     fn test(input: &str) -> String {
         let tokens = crate::tokenizer::tokenize(input);
-        let terms = crate::new_parser::parse_expression(tokens).unwrap();
+        let terms = crate::statement_parser::parse_expression(tokens).unwrap();
         resolve_semicolons(terms, Delimiter::Parens)
             .iter()
             .map(|x| format!("{}", x))

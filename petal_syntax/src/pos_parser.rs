@@ -646,7 +646,7 @@ mod tests {
 
     fn preparse(input: &str) -> Vec<SpacelessTerm> {
         let tokens = crate::tokenizer::tokenize(input);
-        let terms = crate::new_parser::parse_expression(tokens).unwrap();
+        let terms = crate::statement_parser::parse_expression(tokens).unwrap();
         let terms = crate::semicolons::resolve_expression(terms);
         let terms = crate::op_splitter::split_expression(terms);
         crate::coefficient_grouper::group(terms)

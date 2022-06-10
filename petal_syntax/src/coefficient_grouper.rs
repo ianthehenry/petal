@@ -84,7 +84,7 @@ mod tests {
 
     fn test(input: &str) -> String {
         let tokens = crate::tokenizer::tokenize(input);
-        let terms = crate::new_parser::parse_expression(tokens).unwrap();
+        let terms = crate::statement_parser::parse_expression(tokens).unwrap();
         let terms = crate::semicolons::resolve_expression(terms);
         let terms = crate::op_splitter::split_expression(terms);
         delimited("", group(terms), "")
