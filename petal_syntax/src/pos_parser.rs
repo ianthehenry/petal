@@ -59,7 +59,7 @@ impl ParseFrame {
 
 enum ParseResult {
     Complete(Expression, PartOfSpeech),
-    Partial(String, Vec<ParseFrame>),
+    Partial(String),
 }
 
 fn identity(term: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
@@ -265,52 +265,9 @@ fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
 }
 
 pub(super) fn just_parse(terms: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
-    let frame = ParseFrame::new(terms, identity);
-    match parse(vec![frame])? {
+    match ExpressionParsnip::new(terms).parse()? {
         ParseResult::Complete(term, pos) => Ok((term, pos)),
-        ParseResult::Partial(_, _) => panic!("partial parse"),
-    }
-}
-
-fn parse(mut call_stack: Vec<ParseFrame>) -> Result<ParseResult, ParseError> {
-    loop {
-        let frame = call_stack.last_mut().unwrap();
-
-        reduce_stack(&mut frame.stack);
-
-        match frame.input.pop() {
-            None => {
-                if frame.end_reached {
-                    let frame = call_stack.pop().unwrap();
-                    let without_sentinels = frame.stack.into_iter().flatten().collect::<Vec<_>>();
-                    let (term, pos) = match without_sentinels.len() {
-                        0 => Ok((Expression::Tuple(vec![]), Noun)),
-                        1 => Ok(without_sentinels.into_iter().next().unwrap()),
-                        _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
-                    }?;
-                    let term = (frame.finish)(term, pos)?;
-
-                    match call_stack.last_mut() {
-                        None => return Ok(ParseResult::Complete(term, pos)),
-                        Some(next) => next.stack.push(Some((term, pos))),
-                    }
-                } else {
-                    frame.end_reached = true;
-                    frame.stack.push(None);
-                }
-            }
-
-            Some(term) => match term {
-                Term::NumericLiteral(num) => frame.stack.push(Some((Expression::num(num), Noun))),
-                Term::Coefficient(num) => frame.stack.push(Some((
-                    Expression::unary(Expression::Implicit(Builtin::Scale), Expression::num(num)),
-                    Verb(Arity::Unary),
-                ))),
-                Term::Identifier(id) => return Ok(ParseResult::Partial(id, call_stack)),
-                Term::Parens(terms) => call_stack.push(ParseFrame::new(terms, wrap_parens)),
-                Term::Brackets(terms) => call_stack.push(ParseFrame::new(terms, wrap_brackets)),
-            },
-        };
+        ParseResult::Partial(_) => panic!("partial parse"),
     }
 }
 
@@ -319,24 +276,86 @@ struct Assignment {
     expression: Vec<Term>,
 }
 
-// "partial" means that it's waiting for an identifier that has not been seen at
-// all yet. "semipartial" means that we know *which* identifier we're waiting
-// for, but we don't know its part of speech yet.
-enum ParseStatus {
-    Complete(Expression, PartOfSpeech),
-    Partial(String, Vec<ParseFrame>),
-    Semipartial(Identifier, Vec<ParseFrame>),
-    Failed(ParseError),
+// A "parsnip" is a parsing computation that can be suspended and resumed.
+trait Parsnip {
+    // TODO: this could be like resume-with-value. i wonder how that would look.
+    fn provide(&mut self, term: Expression, pos: PartOfSpeech);
+    fn parse(&mut self) -> Result<ParseResult, ParseError>;
+}
+
+struct ExpressionParsnip(Vec<ParseFrame>);
+struct BlockParsnip(Scope);
+
+impl ExpressionParsnip {
+    fn new(terms: Vec<Term>) -> Self {
+        ExpressionParsnip(vec![ParseFrame::new(terms, identity)])
+    }
+}
+
+impl Parsnip for ExpressionParsnip {
+    fn provide(&mut self, term: Expression, pos: PartOfSpeech) {
+        let top_frame = self.0.last_mut().unwrap();
+        top_frame.stack.push(Some((term, pos)));
+    }
+
+    fn parse(&mut self) -> Result<ParseResult, ParseError> {
+        let call_stack = &mut self.0;
+        loop {
+            let frame = call_stack.last_mut().unwrap();
+
+            reduce_stack(&mut frame.stack);
+
+            match frame.input.pop() {
+                None => {
+                    if frame.end_reached {
+                        let frame = call_stack.pop().unwrap();
+                        let without_sentinels =
+                            frame.stack.into_iter().flatten().collect::<Vec<_>>();
+                        let (term, pos) = match without_sentinels.len() {
+                            0 => Ok((Expression::Tuple(vec![]), Noun)),
+                            1 => Ok(without_sentinels.into_iter().next().unwrap()),
+                            _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
+                        }?;
+                        let term = (frame.finish)(term, pos)?;
+
+                        match call_stack.last_mut() {
+                            None => return Ok(ParseResult::Complete(term, pos)),
+                            Some(next) => next.stack.push(Some((term, pos))),
+                        }
+                    } else {
+                        frame.end_reached = true;
+                        frame.stack.push(None);
+                    }
+                }
+
+                Some(term) => match term {
+                    Term::NumericLiteral(num) => {
+                        frame.stack.push(Some((Expression::num(num), Noun)))
+                    }
+                    Term::Coefficient(num) => frame.stack.push(Some((
+                        Expression::unary(
+                            Expression::Implicit(Builtin::Scale),
+                            Expression::num(num),
+                        ),
+                        Verb(Arity::Unary),
+                    ))),
+                    Term::Identifier(id) => return Ok(ParseResult::Partial(id)),
+                    Term::Parens(terms) => call_stack.push(ParseFrame::new(terms, wrap_parens)),
+                    Term::Brackets(terms) => call_stack.push(ParseFrame::new(terms, wrap_brackets)),
+                },
+            };
+        }
+    }
 }
 
 struct ParseOperation {
     id: Identifier,
-    call_stack: Vec<ParseFrame>,
+    state: Box<dyn Parsnip>,
 }
 
 impl ParseOperation {
-    fn new(id: Identifier, call_stack: Vec<ParseFrame>) -> Self {
-        ParseOperation { id, call_stack }
+    fn new(id: Identifier, state: Box<dyn Parsnip>) -> Self {
+        ParseOperation { id, state }
     }
 }
 
@@ -406,7 +425,10 @@ impl Scope {
         let frame = ParseFrame::new(expression, identity);
         let call_stack = vec![frame];
         let id = self.learn_name(name);
-        self.unblocked.push(ParseOperation { id, call_stack });
+        self.unblocked.push(ParseOperation {
+            id,
+            state: Box::new(ExpressionParsnip(call_stack)),
+        });
     }
 
     fn blocked_on_name(&mut self, prereq_name: String, parse: ParseOperation) {
@@ -447,7 +469,7 @@ impl Scope {
         let rich_id = RichIdentifier::new(id, self.name_of_id(&id));
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for mut parse in parses {
-                provide(&mut parse.call_stack, Expression::id(rich_id.clone()), pos);
+                parse.state.provide(Expression::id(rich_id.clone()), pos);
                 self.unblocked.push(parse);
             }
         }
@@ -540,9 +562,9 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
 
     while let Some(assignment) = input_queue.pop() {
         scope.begin(assignment);
-        while let Some(ParseOperation { id, mut call_stack }) = scope.unblocked.pop() {
+        while let Some(ParseOperation { id, mut state }) = scope.unblocked.pop() {
             loop {
-                match parse(call_stack) {
+                match state.parse() {
                     Err(e) => {
                         scope.failed(id, e);
                         break;
@@ -551,16 +573,16 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
                         scope.complete(id, term, pos);
                         break;
                     }
-                    Ok(ParseResult::Partial(prereq_name, stack)) => {
+                    Ok(ParseResult::Partial(prereq_name)) => {
                         // TODO: should add support for "not yet parsed but part of
                         // speech already known"
                         match scope.lookup(&prereq_name, id) {
                             LookupResult::Unknown => {
-                                scope.blocked_on_name(prereq_name, ParseOperation::new(id, stack));
+                                scope.blocked_on_name(prereq_name, ParseOperation::new(id, state));
                                 break;
                             }
                             LookupResult::Pending(prereq_id) => {
-                                scope.blocked_on_id(prereq_id, ParseOperation::new(id, stack));
+                                scope.blocked_on_id(prereq_id, ParseOperation::new(id, state));
                                 break;
                             }
                             LookupResult::Failed(prereq_id, _) => {
@@ -568,9 +590,7 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
                                 break;
                             }
                             LookupResult::Complete(prereq_id, _term, pos) => {
-                                call_stack = stack;
-                                provide(
-                                    &mut call_stack,
+                                state.provide(
                                     Expression::id(RichIdentifier::new(prereq_id, prereq_name)),
                                     pos,
                                 );
@@ -597,11 +617,6 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
     scope
 }
 
-fn provide(call_stack: &mut Vec<ParseFrame>, term: Expression, pos: PartOfSpeech) {
-    let top_frame = call_stack.last_mut().unwrap();
-    top_frame.stack.push(Some((term, pos)));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,14 +638,12 @@ mod tests {
     fn parse_to_completion(input: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
         use ParseResult::*;
 
-        let frame = ParseFrame::new(input, identity);
-        let mut call_stack = vec![frame];
+        let mut call_stack = ExpressionParsnip::new(input);
 
         loop {
-            match parse(call_stack)? {
+            match call_stack.parse()? {
                 Complete(term, pos) => return Ok((term, pos)),
-                Partial(name, stack) => {
-                    call_stack = stack;
+                Partial(name) => {
                     let pos = match name.as_str() {
                         "+" | "*" => Verb(Arity::Binary),
                         "neg" | "sign" => Verb(Arity::Unary),
@@ -640,11 +653,7 @@ mod tests {
                         "x" | "y" => Noun,
                         _ => panic!("unknown identifier"),
                     };
-                    provide(
-                        &mut call_stack,
-                        Expression::id(RichIdentifier::new(0, name)),
-                        pos,
-                    );
+                    call_stack.provide(Expression::id(RichIdentifier::new(0, name)), pos);
                 }
             }
         }
@@ -668,20 +677,18 @@ mod tests {
         }
     }
 
-    fn begin_parse(input: &str) -> Vec<ParseFrame> {
-        let frame = ParseFrame::new(preparse(input), identity);
-        vec![frame]
+    fn begin_parse(input: &str) -> ExpressionParsnip {
+        ExpressionParsnip::new(preparse(input))
     }
 
-    fn advance(call_stack: Vec<ParseFrame>) -> (String, Option<Vec<ParseFrame>>) {
-        match parse(call_stack) {
-            Ok(ParseResult::Complete(term, pos)) => (show_annotated_term(&(term, pos)), None),
-            Ok(ParseResult::Partial(id, stack)) => (format!("awaiting {}", id), Some(stack)),
-            Err(ParseError::DidNotFullyReduce(terms)) => (
-                format!("incomplete parse: {}", show_annotated_terms(terms)),
-                None,
-            ),
-            Err(error) => (format!("error: {:?}", error), None),
+    fn advance(call_stack: &mut ExpressionParsnip) -> String {
+        match call_stack.parse() {
+            Ok(ParseResult::Complete(term, pos)) => show_annotated_term(&(term, pos)),
+            Ok(ParseResult::Partial(id)) => format!("awaiting {}", id),
+            Err(ParseError::DidNotFullyReduce(terms)) => {
+                format!("incomplete parse: {}", show_annotated_terms(terms))
+            }
+            Err(error) => format!("error: {:?}", error),
         }
     }
 
@@ -828,19 +835,14 @@ mod tests {
         fn id(name: &str) -> Expression {
             Expression::id(RichIdentifier::new(0, name.to_string()))
         }
-        let call_stack = begin_parse("x + foo");
-        let (result, mut call_stack) = advance(call_stack);
-        k9::snapshot!(result, "awaiting foo");
-        provide(call_stack.as_mut().unwrap(), id("foo"), Noun);
-        let (result, mut call_stack) = advance(call_stack.unwrap());
-        k9::snapshot!(result, "awaiting +");
-        provide(call_stack.as_mut().unwrap(), id("+"), Verb(Arity::Binary));
-        let (result, mut call_stack) = advance(call_stack.unwrap());
-        k9::snapshot!(result, "awaiting x");
-        provide(call_stack.as_mut().unwrap(), id("x"), Noun);
-        let (result, call_stack) = advance(call_stack.unwrap());
-        k9::snapshot!(result, "n:(+ x foo)");
-        k9::snapshot!(call_stack, "None");
+        let mut call_stack = begin_parse("x + foo");
+        k9::snapshot!(advance(&mut call_stack), "awaiting foo");
+        call_stack.provide(id("foo"), Noun);
+        k9::snapshot!(advance(&mut call_stack), "awaiting +");
+        call_stack.provide(id("+"), Verb(Arity::Binary));
+        k9::snapshot!(advance(&mut call_stack), "awaiting x");
+        call_stack.provide(id("x"), Noun);
+        k9::snapshot!(advance(&mut call_stack), "n:(+ x foo)");
     }
 
     fn assign(name: &str, expr: &str) -> Assignment {
