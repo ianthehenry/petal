@@ -555,13 +555,33 @@ impl Scope {
     }
 }
 
-fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
-    let mut input_queue = assignments;
-    // we have to process top-to-bottom
-    input_queue.reverse();
+impl BlockParsnip {
+    fn new(mut scope: Scope, assignments: Vec<Assignment>) -> Self {
+        for assignment in assignments {
+            scope.begin(assignment);
+        }
+        // We need to begin elements from top-to-bottom, but every time we begin
+        // something we push it onto a stack. But I think it will be more
+        // efficient to parse from top-to-bottom as well, as I expect
+        // backreferences will be more common than forward references. This
+        // reverse should not alter the semantics or result of the parse in any
+        // way.
+        // TODO: is this actually better? Might be worth profiling when I have a
+        // nontrivial program to test it on.
+        scope.unblocked.reverse();
+        BlockParsnip(scope)
+    }
+}
 
-    while let Some(assignment) = input_queue.pop() {
-        scope.begin(assignment);
+fn parse_body(scope: Scope, assignments: Vec<Assignment>) -> Scope {
+    let mut parsnip = BlockParsnip::new(scope, assignments);
+    parsnip.parse();
+    parsnip.0
+}
+
+impl Parsnip for BlockParsnip {
+    fn parse(&mut self) -> Result<ParseResult, ParseError> {
+        let scope = &mut self.0;
         while let Some(ParseOperation { id, mut state }) = scope.unblocked.pop() {
             loop {
                 match state.parse() {
@@ -600,21 +620,24 @@ fn parse_body(mut scope: Scope, assignments: Vec<Assignment>) -> Scope {
                 }
             }
         }
+
+        // If any assignment failed, the whole parse failed.
+        //
+        // Otherwise, if something is blocked on name, we need to return pending.
+        //
+        // Otherwise, if something is blocked on an ID defined in a parent scope,
+        // then we need to return pending.
+        //
+        // Otherwise, if something is blocked on an ID defined in *my* scope,
+        // there's a cyclic problem and we can error immediately.
+        //
+        // Otherwise, we successfully parsed every assignment.
+        Ok(ParseResult::Partial("TODO".to_string()))
     }
 
-    // If any assignment failed, the whole parse failed.
-    //
-    // Otherwise, if something is blocked on name, we need to return pending.
-    //
-    // Otherwise, if something is blocked on an ID defined in a parent scope,
-    // then we need to return pending.
-    //
-    // Otherwise, if something is blocked on an ID defined in *my* scope,
-    // there's a cyclic problem and we can error immediately.
-    //
-    // Otherwise, we successfully parsed every assignment.
-
-    scope
+    fn provide(&mut self, term: Expression, pos: PartOfSpeech) {
+        todo!()
+    }
 }
 
 #[cfg(test)]
@@ -1029,8 +1052,9 @@ mod tests {
         top_level_scope.add_builtin("y", Noun);
         let top_level_scope = Rc::new(top_level_scope);
         let scope = Scope::new(Some(Rc::clone(&top_level_scope)));
-        let scope = parse_body(scope, assignments);
-        print_assignments(&scope)
+        let mut parsnip = BlockParsnip::new(scope, assignments);
+        parsnip.parse();
+        print_assignments(&parsnip.0)
     }
 
     #[test]
