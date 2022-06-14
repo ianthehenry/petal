@@ -109,27 +109,31 @@ impl fmt::Display for Expression {
         match self {
             Atom(atom) => write!(f, "{}", atom),
             Implicit(builtin) => write!(f, "<{}>", builtin),
-            Parens(term) => write!(f, "{}", term),
-            Brackets(terms) => {
+            Parens(expr) => write!(f, "{}", expr),
+            Brackets(exprs) => {
                 write!(f, "[")?;
-                for (i, term) in terms.iter().rev().enumerate() {
+                for (i, expr) in exprs.iter().rev().enumerate() {
                     if i != 0 {
                         write!(f, " ")?;
                     }
 
-                    write!(f, "{}", term)?;
+                    write!(f, "{}", expr)?;
                 }
                 write!(f, "]")
             }
-            Tuple(terms) => {
-                write!(f, "(<tuple>")?;
-                for term in terms.iter().rev() {
-                    write!(f, " {}", term)?;
+            Tuple(exprs) => {
+                if exprs.is_empty() {
+                    write!(f, "<unit>")
+                } else {
+                    write!(f, "(<tuple>")?;
+                    for expr in exprs.iter().rev() {
+                        write!(f, " {}", expr)?;
+                    }
+                    write!(f, ")")
                 }
-                write!(f, ")")
             }
-            UnaryApplication(func, term) => {
-                write!(f, "({} {})", func, term)
+            UnaryApplication(func, expr) => {
+                write!(f, "({} {})", func, expr)
             }
             BinaryApplication(func, lhs, rhs) => {
                 write!(f, "({} {} {})", func, lhs, rhs)

@@ -62,36 +62,36 @@ enum ParseResult {
     Partial(String),
 }
 
-fn identity(term: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
-    Ok(term)
+fn identity(expr: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
+    Ok(expr)
 }
 
-fn wrap_parens(term: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
-    Ok(Expression::Parens(Box::new(term)))
+fn wrap_parens(expr: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
+    Ok(Expression::Parens(Box::new(expr)))
 }
 
-fn wrap_brackets(term: Expression, pos: PartOfSpeech) -> Result<Expression, ParseError> {
+fn wrap_brackets(expr: Expression, pos: PartOfSpeech) -> Result<Expression, ParseError> {
     match pos {
         Noun => {
-            let terms = match term {
-                Expression::Tuple(terms) => terms,
-                term => vec![term],
+            let exprs = match expr {
+                Expression::Tuple(exprs) => exprs,
+                expr => vec![expr],
             };
-            Ok(Expression::Brackets(terms))
+            Ok(Expression::Brackets(exprs))
         }
         _ => Err(ParseError::ArrayLiteralNotNoun),
     }
 }
 
-fn pop_term(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) -> Expression {
-    let (term, _) = stack.pop().unwrap().unwrap();
-    term
+fn pop_expr(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) -> Expression {
+    let (expr, _) = stack.pop().unwrap().unwrap();
+    expr
 }
 
 fn pop_adverb(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) -> (Expression, Arity) {
-    let (term, pos) = stack.pop().unwrap().unwrap();
+    let (expr, pos) = stack.pop().unwrap().unwrap();
     match pos {
-        Adverb(_, result_arity) => (term, result_arity),
+        Adverb(_, result_arity) => (expr, result_arity),
         _ => panic!("not an adverb!"),
     }
 }
@@ -106,8 +106,8 @@ macro_rules! lookahead {
 
 macro_rules! bin_impl_lr {
     ($stack:ident, $inner:path, $pos:expr) => {
-        let lhs = pop_term($stack);
-        let rhs = pop_term($stack);
+        let lhs = pop_expr($stack);
+        let rhs = pop_expr($stack);
         $stack.push(Some((
             Expression::binary(Expression::Implicit($inner), lhs, rhs),
             $pos,
@@ -117,8 +117,8 @@ macro_rules! bin_impl_lr {
 
 macro_rules! bin_impl_rl {
     ($stack:ident, $inner:expr, $pos:expr) => {
-        let rhs = pop_term($stack);
-        let lhs = pop_term($stack);
+        let rhs = pop_expr($stack);
+        let lhs = pop_expr($stack);
         $stack.push(Some((
             Expression::binary(Expression::Implicit($inner), lhs, rhs),
             $pos,
@@ -197,20 +197,20 @@ fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
         match &stack[stack.len() - 4..] {
             stack![a1, v] => {
                 let (adverb, result_arity) = pop_adverb(stack);
-                let verb = pop_term(stack);
+                let verb = pop_expr(stack);
                 stack.push(Some((Expression::unary(adverb, verb), Verb(result_arity))));
             }
 
             stack![svn, v1, n] => lookahead!(stack, {
-                let verb = pop_term(stack);
-                let noun = pop_term(stack);
+                let verb = pop_expr(stack);
+                let noun = pop_expr(stack);
                 stack.push(Some((Expression::unary(verb, noun), Noun)));
             }),
 
             stack![_, vn, a2, vn] => lookahead!(stack, {
-                let lhs = pop_term(stack);
+                let lhs = pop_expr(stack);
                 let (conjunction, result_arity) = pop_adverb(stack);
-                let rhs = pop_term(stack);
+                let rhs = pop_expr(stack);
                 stack.push(Some((
                     Expression::binary(conjunction, lhs, rhs),
                     Verb(result_arity),
@@ -218,20 +218,20 @@ fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
             }),
 
             stack![sv, n, v2, n] => lookahead!(stack, {
-                let lhs = pop_term(stack);
-                let verb = pop_term(stack);
-                let rhs = pop_term(stack);
+                let lhs = pop_expr(stack);
+                let verb = pop_expr(stack);
+                let rhs = pop_expr(stack);
                 stack.push(Some((Expression::binary(verb, lhs, rhs), Noun)));
             }),
 
             stack![svn, n, n] => lookahead!(stack, {
-                let first = pop_term(stack);
-                let second = pop_term(stack);
+                let first = pop_expr(stack);
+                let second = pop_expr(stack);
 
                 let result = match second {
-                    Expression::Tuple(mut terms) => {
-                        terms.push(first);
-                        Expression::Tuple(terms)
+                    Expression::Tuple(mut exprs) => {
+                        exprs.push(first);
+                        Expression::Tuple(exprs)
                     }
                     _ => Expression::Tuple(vec![second, first]),
                 };
@@ -266,7 +266,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
 
 pub(super) fn just_parse(terms: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
     match ExpressionParsnip::new(terms).parse()? {
-        ParseResult::Complete(term, pos) => Ok((term, pos)),
+        ParseResult::Complete(expr, pos) => Ok((expr, pos)),
         ParseResult::Partial(_) => panic!("partial parse"),
     }
 }
@@ -279,7 +279,7 @@ struct Assignment {
 // A "parsnip" is a parsing computation that can be suspended and resumed.
 trait Parsnip {
     // TODO: this could be like resume-with-value. i wonder how that would look.
-    fn provide(&mut self, term: Expression, pos: PartOfSpeech);
+    fn provide(&mut self, expr: Expression, pos: PartOfSpeech);
     fn parse(&mut self) -> Result<ParseResult, ParseError>;
 }
 
@@ -293,9 +293,9 @@ impl ExpressionParsnip {
 }
 
 impl Parsnip for ExpressionParsnip {
-    fn provide(&mut self, term: Expression, pos: PartOfSpeech) {
+    fn provide(&mut self, expr: Expression, pos: PartOfSpeech) {
         let top_frame = self.0.last_mut().unwrap();
-        top_frame.stack.push(Some((term, pos)));
+        top_frame.stack.push(Some((expr, pos)));
     }
 
     fn parse(&mut self) -> Result<ParseResult, ParseError> {
@@ -311,16 +311,16 @@ impl Parsnip for ExpressionParsnip {
                         let frame = call_stack.pop().unwrap();
                         let without_sentinels =
                             frame.stack.into_iter().flatten().collect::<Vec<_>>();
-                        let (term, pos) = match without_sentinels.len() {
+                        let (expr, pos) = match without_sentinels.len() {
                             0 => Ok((Expression::Tuple(vec![]), Noun)),
                             1 => Ok(without_sentinels.into_iter().next().unwrap()),
                             _ => Err(ParseError::DidNotFullyReduce(without_sentinels)),
                         }?;
-                        let term = (frame.finish)(term, pos)?;
+                        let expr = (frame.finish)(expr, pos)?;
 
                         match call_stack.last_mut() {
-                            None => return Ok(ParseResult::Complete(term, pos)),
-                            Some(next) => next.stack.push(Some((term, pos))),
+                            None => return Ok(ParseResult::Complete(expr, pos)),
+                            Some(next) => next.stack.push(Some((expr, pos))),
                         }
                     } else {
                         frame.end_reached = true;
@@ -465,7 +465,7 @@ impl Scope {
         }
     }
 
-    fn complete(&mut self, id: Identifier, term: Expression, pos: PartOfSpeech) {
+    fn complete(&mut self, id: Identifier, expr: Expression, pos: PartOfSpeech) {
         let rich_id = RichIdentifier::new(id, self.name_of_id(&id));
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for mut parse in parses {
@@ -473,7 +473,7 @@ impl Scope {
                 self.unblocked.push(parse);
             }
         }
-        assert!(self.complete.insert(id, (term, pos)).is_none());
+        assert!(self.complete.insert(id, (expr, pos)).is_none());
     }
 
     fn lookup_previous_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
@@ -515,8 +515,8 @@ impl Scope {
     }
 
     fn lookup_by_id(&self, id: Identifier) -> LookupResult {
-        if let Some((term, pos)) = self.complete.get(&id) {
-            return LookupResult::Complete(id, term, *pos);
+        if let Some((expr, pos)) = self.complete.get(&id) {
+            return LookupResult::Complete(id, expr, *pos);
         }
         if let Some(error) = self.failed.get(&id) {
             return LookupResult::Failed(id, error);
@@ -589,8 +589,8 @@ impl Parsnip for BlockParsnip {
                         scope.failed(id, e);
                         break;
                     }
-                    Ok(ParseResult::Complete(term, pos)) => {
-                        scope.complete(id, term, pos);
+                    Ok(ParseResult::Complete(expr, pos)) => {
+                        scope.complete(id, expr, pos);
                         break;
                     }
                     Ok(ParseResult::Partial(prereq_name)) => {
@@ -609,7 +609,7 @@ impl Parsnip for BlockParsnip {
                                 scope.failed(id, ParseError::BadReference(prereq_id));
                                 break;
                             }
-                            LookupResult::Complete(prereq_id, _term, pos) => {
+                            LookupResult::Complete(prereq_id, _expr, pos) => {
                                 state.provide(
                                     Expression::id(RichIdentifier::new(prereq_id, prereq_name)),
                                     pos,
@@ -635,7 +635,7 @@ impl Parsnip for BlockParsnip {
         Ok(ParseResult::Partial("TODO".to_string()))
     }
 
-    fn provide(&mut self, term: Expression, pos: PartOfSpeech) {
+    fn provide(&mut self, expr: Expression, pos: PartOfSpeech) {
         todo!()
     }
 }
@@ -645,15 +645,15 @@ mod tests {
     use super::*;
     use crate::expression::Atom;
 
-    fn show_annotated_term(annotated_term: &(Expression, PartOfSpeech)) -> String {
-        let (term, pos) = annotated_term;
-        format!("{}:{}", pos, term)
+    fn show_annotated_expr(annotated_expr: &(Expression, PartOfSpeech)) -> String {
+        let (expr, pos) = annotated_expr;
+        format!("{}:{}", pos, expr)
     }
 
-    fn show_annotated_terms(terms: Vec<(Expression, PartOfSpeech)>) -> String {
-        terms
+    fn show_annotated_exprs(annotated_exprs: Vec<(Expression, PartOfSpeech)>) -> String {
+        annotated_exprs
             .iter()
-            .map(show_annotated_term)
+            .map(show_annotated_expr)
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -665,7 +665,7 @@ mod tests {
 
         loop {
             match call_stack.parse()? {
-                Complete(term, pos) => return Ok((term, pos)),
+                Complete(expr, pos) => return Ok((expr, pos)),
                 Partial(name) => {
                     let pos = match name.as_str() {
                         "+" | "*" => Verb(Arity::Binary),
@@ -692,9 +692,9 @@ mod tests {
 
     fn test(input: &str) -> String {
         match parse_to_completion(preparse(input)) {
-            Ok(term) => show_annotated_term(&term),
-            Err(ParseError::DidNotFullyReduce(terms)) => {
-                format!("incomplete parse: {}", show_annotated_terms(terms))
+            Ok(expr) => show_annotated_expr(&expr),
+            Err(ParseError::DidNotFullyReduce(exprs)) => {
+                format!("incomplete parse: {}", show_annotated_exprs(exprs))
             }
             Err(error) => format!("error: {:?}", error),
         }
@@ -706,10 +706,10 @@ mod tests {
 
     fn advance(call_stack: &mut ExpressionParsnip) -> String {
         match call_stack.parse() {
-            Ok(ParseResult::Complete(term, pos)) => show_annotated_term(&(term, pos)),
+            Ok(ParseResult::Complete(expr, pos)) => show_annotated_expr(&(expr, pos)),
             Ok(ParseResult::Partial(id)) => format!("awaiting {}", id),
-            Err(ParseError::DidNotFullyReduce(terms)) => {
-                format!("incomplete parse: {}", show_annotated_terms(terms))
+            Err(ParseError::DidNotFullyReduce(exprs)) => {
+                format!("incomplete parse: {}", show_annotated_exprs(exprs))
             }
             Err(error) => format!("error: {:?}", error),
         }
@@ -917,21 +917,21 @@ mod tests {
         Pending(&'a str),
     }
 
-    fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(term: &Expression, f: &mut F) -> Expression {
+    fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(expr: &Expression, f: &mut F) -> Expression {
         use Expression::*;
-        match term {
+        match expr {
             Atom(a) => Atom(f(a)),
-            Parens(term) => Parens(Box::new(rewrite_atoms(&*term, f))),
+            Parens(exprs) => Parens(Box::new(rewrite_atoms(&*exprs, f))),
             Implicit(x) => Implicit(*x),
-            Tuple(terms) => Tuple(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
-            Brackets(terms) => Brackets(terms.iter().map(|term| rewrite_atoms(term, f)).collect()),
-            UnaryApplication(term1, term2) => {
-                Expression::unary(rewrite_atoms(&*term1, f), rewrite_atoms(&*term2, f))
+            Tuple(exprs) => Tuple(exprs.iter().map(|expr| rewrite_atoms(expr, f)).collect()),
+            Brackets(exprs) => Brackets(exprs.iter().map(|expr| rewrite_atoms(expr, f)).collect()),
+            UnaryApplication(expr1, expr2) => {
+                Expression::unary(rewrite_atoms(&*expr1, f), rewrite_atoms(&*expr2, f))
             }
-            BinaryApplication(term1, term2, term3) => Expression::binary(
-                rewrite_atoms(&*term1, f),
-                rewrite_atoms(&*term2, f),
-                rewrite_atoms(&*term3, f),
+            BinaryApplication(expr1, expr2, expr3) => Expression::binary(
+                rewrite_atoms(&*expr1, f),
+                rewrite_atoms(&*expr2, f),
+                rewrite_atoms(&*expr3, f),
             ),
         }
     }
@@ -942,7 +942,7 @@ mod tests {
         let completes = scope
             .complete
             .iter()
-            .map(|(id, (term, pos))| (*id, AssignmentStatus::Complete(term, pos)));
+            .map(|(id, (expr, pos))| (*id, AssignmentStatus::Complete(expr, pos)));
         let failures = scope
             .failed
             .iter()
@@ -982,7 +982,7 @@ mod tests {
             }
 
             match status {
-                AssignmentStatus::Complete(term, pos) => {
+                AssignmentStatus::Complete(expr, pos) => {
                     // TODO: do this with mutation?
                     let mut f = |atom: &Atom| match atom {
                         Atom::Identifier(rich_id) => {
@@ -994,13 +994,13 @@ mod tests {
                         }
                         _ => atom.clone(),
                     };
-                    let term = rewrite_atoms(&term, &mut f);
+                    let expr = rewrite_atoms(&expr, &mut f);
 
                     result.push_str(&format!(
                         "{} ({}) = {}",
                         disambiguator.view(&rich_id),
                         pos,
-                        term
+                        expr
                     ));
                 }
                 AssignmentStatus::Failed(ParseError::BadReference(prereq_id)) => {
