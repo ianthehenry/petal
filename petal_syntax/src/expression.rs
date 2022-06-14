@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expression {
+    Compound(HashMap<RichIdentifier, Expression>, Box<Expression>),
     Implicit(Builtin),
     Atom(Atom),
     Parens(Box<Expression>),
@@ -107,6 +109,16 @@ impl fmt::Display for Expression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Expression::*;
         match self {
+            Compound(assignments, expr) => {
+                write!(f, "(let (")?;
+                for (i, (id, expr)) in assignments.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "({} {})", id, expr)?;
+                }
+                write!(f, ") {})", expr)
+            }
             Atom(atom) => write!(f, "{}", atom),
             Implicit(builtin) => write!(f, "<{}>", builtin),
             Parens(expr) => write!(f, "{}", expr),

@@ -21,6 +21,9 @@ pub enum ParseError {
     DidNotFullyReduce(Vec<(Expression, PartOfSpeech)>),
     ArrayLiteralNotNoun,
     BadReference(Identifier),
+    SubAssignmentFailed,
+    CyclicAssignments,
+    BlockWithoutResult,
 }
 
 impl fmt::Display for PartOfSpeech {
@@ -59,7 +62,8 @@ impl ParseFrame {
 
 enum ParseResult {
     Complete(Expression, PartOfSpeech),
-    Partial(String),
+    PendingName(String),
+    PendingId(Identifier),
 }
 
 fn identity(expr: Expression, _: PartOfSpeech) -> Result<Expression, ParseError> {
@@ -267,7 +271,7 @@ fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
 pub(super) fn just_parse(terms: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
     match ExpressionParsnip::new(terms).parse()? {
         ParseResult::Complete(expr, pos) => Ok((expr, pos)),
-        ParseResult::Partial(_) => panic!("partial parse"),
+        ParseResult::PendingName(_) | ParseResult::PendingId(_) => panic!("partial parse"),
     }
 }
 
@@ -339,7 +343,7 @@ impl Parsnip for ExpressionParsnip {
                         ),
                         Verb(Arity::Unary),
                     ))),
-                    Term::Identifier(id) => return Ok(ParseResult::Partial(id)),
+                    Term::Identifier(id) => return Ok(ParseResult::PendingName(id)),
                     Term::Parens(terms) => call_stack.push(ParseFrame::new(terms, wrap_parens)),
                     Term::Brackets(terms) => call_stack.push(ParseFrame::new(terms, wrap_brackets)),
                 },
@@ -425,10 +429,10 @@ impl Scope {
         let frame = ParseFrame::new(expression, identity);
         let call_stack = vec![frame];
         let id = self.learn_name(name);
-        self.unblocked.push(ParseOperation {
+        self.unblocked.push(ParseOperation::new(
             id,
-            state: Box::new(ExpressionParsnip(call_stack)),
-        });
+            Box::new(ExpressionParsnip(call_stack)),
+        ));
     }
 
     fn blocked_on_name(&mut self, prereq_name: String, parse: ParseOperation) {
@@ -553,6 +557,74 @@ impl Scope {
         vec.push(id);
         id
     }
+
+    // At this point we have fully reduced ourselves.
+    //
+    // If any assignment failed, the whole parse failed.
+    //
+    // Otherwise, if something is blocked on name, we need to return pending.
+    //
+    // Otherwise, if something is blocked on an ID defined in a parent scope,
+    // then we need to return pending.
+    //
+    // Otherwise, if something is blocked on an ID defined in *my* scope,
+    // there's a cyclic problem and we can error immediately.
+    //
+    // Otherwise, we successfully parsed every assignment.
+    fn status(&self) -> Result<ParseResult, ParseError> {
+        assert!(self.unblocked.is_empty(), "scope is not fully reduced");
+
+        if !self.failed.is_empty() {
+            return Err(ParseError::SubAssignmentFailed);
+        }
+
+        if let Some(name) = self.blocked_on_name.keys().next() {
+            return Ok(ParseResult::PendingName(name.clone()));
+        }
+
+        // TODO: a bit of denormalization would remove the need for a linear
+        // scan here
+        for id in self.blocked_on_id.keys() {
+            if !self.id_to_name.contains_key(id) {
+                // TODO: this should say "pending this particular identifier,
+                // not the string"
+                return Ok(ParseResult::PendingId(*id));
+            }
+        }
+        if !self.blocked_on_id.is_empty() {
+            return Err(ParseError::CyclicAssignments);
+        }
+
+        // TODO: should maybe cache this key? also do we want to allow multiple
+        // top-level statements...? is that actually desirable in any way?
+        match self.name_to_ids.get("_") {
+            None => Err(ParseError::BlockWithoutResult),
+            Some(ids) => {
+                // TODO: all this is a mess, and this should not include the
+                // "result" expression as one of the assignments
+                let result_id = *ids.last().unwrap();
+                let (result_expr, result_pos) = self.complete.get(&result_id).unwrap();
+                // TODO: I *think* I can change the trait around a bit and get
+                // rid of all of this copying. This should really consume the
+                // value, right? I *think* I can write it that way.
+                let assignments = self
+                    .complete
+                    .iter()
+                    .map(|(id, (expr, _pos))| {
+                        (
+                            RichIdentifier::new(*id, self.id_to_name.get(&id).unwrap().clone()),
+                            expr.clone(),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>();
+
+                Ok(ParseResult::Complete(
+                    Expression::Compound(assignments, Box::new(result_expr.clone())),
+                    *result_pos,
+                ))
+            }
+        }
+    }
 }
 
 impl BlockParsnip {
@@ -593,11 +665,16 @@ impl Parsnip for BlockParsnip {
                         scope.complete(id, expr, pos);
                         break;
                     }
-                    Ok(ParseResult::Partial(prereq_name)) => {
+                    Ok(ParseResult::PendingId(prereq_id)) => {
+                        todo!()
+                    }
+                    Ok(ParseResult::PendingName(prereq_name)) => {
                         // TODO: should add support for "not yet parsed but part of
                         // speech already known"
                         match scope.lookup(&prereq_name, id) {
                             LookupResult::Unknown => {
+                                // TODO: any way to do this without creating a
+                                // new op here?
                                 scope.blocked_on_name(prereq_name, ParseOperation::new(id, state));
                                 break;
                             }
@@ -620,19 +697,7 @@ impl Parsnip for BlockParsnip {
                 }
             }
         }
-
-        // If any assignment failed, the whole parse failed.
-        //
-        // Otherwise, if something is blocked on name, we need to return pending.
-        //
-        // Otherwise, if something is blocked on an ID defined in a parent scope,
-        // then we need to return pending.
-        //
-        // Otherwise, if something is blocked on an ID defined in *my* scope,
-        // there's a cyclic problem and we can error immediately.
-        //
-        // Otherwise, we successfully parsed every assignment.
-        Ok(ParseResult::Partial("TODO".to_string()))
+        scope.status()
     }
 
     fn provide(&mut self, expr: Expression, pos: PartOfSpeech) {
@@ -659,14 +724,13 @@ mod tests {
     }
 
     fn parse_to_completion(input: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
-        use ParseResult::*;
-
         let mut call_stack = ExpressionParsnip::new(input);
 
         loop {
             match call_stack.parse()? {
-                Complete(expr, pos) => return Ok((expr, pos)),
-                Partial(name) => {
+                ParseResult::Complete(expr, pos) => return Ok((expr, pos)),
+                ParseResult::PendingId(name) => todo!(),
+                ParseResult::PendingName(name) => {
                     let pos = match name.as_str() {
                         "+" | "*" => Verb(Arity::Binary),
                         "neg" | "sign" => Verb(Arity::Unary),
@@ -707,7 +771,8 @@ mod tests {
     fn advance(call_stack: &mut ExpressionParsnip) -> String {
         match call_stack.parse() {
             Ok(ParseResult::Complete(expr, pos)) => show_annotated_expr(&(expr, pos)),
-            Ok(ParseResult::Partial(id)) => format!("awaiting {}", id),
+            Ok(ParseResult::PendingName(id)) => format!("awaiting {}", id),
+            Ok(ParseResult::PendingId(_)) => todo!(),
             Err(ParseError::DidNotFullyReduce(exprs)) => {
                 format!("incomplete parse: {}", show_annotated_exprs(exprs))
             }
@@ -921,17 +986,23 @@ mod tests {
         use Expression::*;
         match expr {
             Atom(a) => Atom(f(a)),
-            Parens(exprs) => Parens(Box::new(rewrite_atoms(&*exprs, f))),
+            Parens(exprs) => Parens(Box::new(rewrite_atoms(exprs, f))),
             Implicit(x) => Implicit(*x),
             Tuple(exprs) => Tuple(exprs.iter().map(|expr| rewrite_atoms(expr, f)).collect()),
             Brackets(exprs) => Brackets(exprs.iter().map(|expr| rewrite_atoms(expr, f)).collect()),
             UnaryApplication(expr1, expr2) => {
-                Expression::unary(rewrite_atoms(&*expr1, f), rewrite_atoms(&*expr2, f))
+                Expression::unary(rewrite_atoms(expr1, f), rewrite_atoms(expr2, f))
             }
             BinaryApplication(expr1, expr2, expr3) => Expression::binary(
-                rewrite_atoms(&*expr1, f),
-                rewrite_atoms(&*expr2, f),
-                rewrite_atoms(&*expr3, f),
+                rewrite_atoms(expr1, f),
+                rewrite_atoms(expr2, f),
+                rewrite_atoms(expr3, f),
+            ),
+            Compound(map, expr) => Expression::Compound(
+                map.iter()
+                    .map(|(id, expr)| (id.clone(), rewrite_atoms(expr, f)))
+                    .collect(),
+                Box::new(rewrite_atoms(expr, f)),
             ),
         }
     }
