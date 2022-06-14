@@ -1006,6 +1006,7 @@ mod tests {
                 AssignmentStatus::Failed(ParseError::BadReference(prereq_id)) => {
                     let prereq_name = scope.name_of_id(prereq_id);
                     let rich_prereq_id = RichIdentifier::new(*prereq_id, prereq_name);
+                    disambiguator.see(rich_prereq_id.clone());
                     result.push_str(&format!(
                         "{} depends on failed {}",
                         disambiguator.view(&rich_id),
