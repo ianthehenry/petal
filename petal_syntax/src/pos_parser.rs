@@ -280,14 +280,17 @@ struct Assignment {
     expression: Vec<Term>,
 }
 
-// A "parsnip" is a parsing computation that can be suspended and resumed.
+// A "parsnip" is a parsing computation that can be suspended and resumed. A
+// better name might be something with "fiber" in it, but that's not as fun.
 trait Parsnip {
     // TODO: this could be like resume-with-value. i wonder how that would look.
-    fn provide(&mut self, expr: Expression, pos: PartOfSpeech);
+    fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech);
     fn parse(&mut self) -> Result<ParseResult, ParseError>;
 }
 
 struct ExpressionParsnip(Vec<ParseFrame>);
+// TODO: do we really need blockparsnip to be its own type? why aren't we just
+// using scope directly?
 struct BlockParsnip(Scope);
 
 impl ExpressionParsnip {
@@ -297,9 +300,9 @@ impl ExpressionParsnip {
 }
 
 impl Parsnip for ExpressionParsnip {
-    fn provide(&mut self, expr: Expression, pos: PartOfSpeech) {
+    fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
         let top_frame = self.0.last_mut().unwrap();
-        top_frame.stack.push(Some((expr, pos)));
+        top_frame.stack.push(Some((Expression::id(id), pos)));
     }
 
     fn parse(&mut self) -> Result<ParseResult, ParseError> {
@@ -473,7 +476,7 @@ impl Scope {
         let rich_id = RichIdentifier::new(id, self.name_of_id(&id));
         if let Some(parses) = self.blocked_on_id.remove(&id) {
             for mut parse in parses {
-                parse.state.provide(Expression::id(rich_id.clone()), pos);
+                parse.state.provide(rich_id.clone(), pos);
                 self.unblocked.push(parse);
             }
         }
@@ -557,74 +560,6 @@ impl Scope {
         vec.push(id);
         id
     }
-
-    // At this point we have fully reduced ourselves.
-    //
-    // If any assignment failed, the whole parse failed.
-    //
-    // Otherwise, if something is blocked on name, we need to return pending.
-    //
-    // Otherwise, if something is blocked on an ID defined in a parent scope,
-    // then we need to return pending.
-    //
-    // Otherwise, if something is blocked on an ID defined in *my* scope,
-    // there's a cyclic problem and we can error immediately.
-    //
-    // Otherwise, we successfully parsed every assignment.
-    fn status(&self) -> Result<ParseResult, ParseError> {
-        assert!(self.unblocked.is_empty(), "scope is not fully reduced");
-
-        if !self.failed.is_empty() {
-            return Err(ParseError::SubAssignmentFailed);
-        }
-
-        if let Some(name) = self.blocked_on_name.keys().next() {
-            return Ok(ParseResult::PendingName(name.clone()));
-        }
-
-        // TODO: a bit of denormalization would remove the need for a linear
-        // scan here
-        for id in self.blocked_on_id.keys() {
-            if !self.id_to_name.contains_key(id) {
-                // TODO: this should say "pending this particular identifier,
-                // not the string"
-                return Ok(ParseResult::PendingId(*id));
-            }
-        }
-        if !self.blocked_on_id.is_empty() {
-            return Err(ParseError::CyclicAssignments);
-        }
-
-        // TODO: should maybe cache this key? also do we want to allow multiple
-        // top-level statements...? is that actually desirable in any way?
-        match self.name_to_ids.get("_") {
-            None => Err(ParseError::BlockWithoutResult),
-            Some(ids) => {
-                // TODO: all this is a mess, and this should not include the
-                // "result" expression as one of the assignments
-                let result_id = *ids.last().unwrap();
-                let (result_expr, result_pos) = self.complete.get(&result_id).unwrap();
-                // TODO: I *think* I can change the trait around a bit and get
-                // rid of all of this copying. This should really consume the
-                // value, right? I *think* I can write it that way.
-                let assignments = self
-                    .complete
-                    .iter()
-                    .map(|(id, (expr, _pos))| {
-                        (
-                            RichIdentifier::new(*id, self.id_to_name.get(&id).unwrap().clone()),
-                            expr.clone(),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>();
-
-                Ok(ParseResult::Complete(
-                    Expression::Compound(assignments, Box::new(result_expr.clone())),
-                    *result_pos,
-                ))
-            }
-        }
-    }
 }
 
 impl BlockParsnip {
@@ -687,21 +622,92 @@ impl Parsnip for BlockParsnip {
                                 break;
                             }
                             LookupResult::Complete(prereq_id, _expr, pos) => {
-                                state.provide(
-                                    Expression::id(RichIdentifier::new(prereq_id, prereq_name)),
-                                    pos,
-                                );
+                                state.provide(RichIdentifier::new(prereq_id, prereq_name), pos);
                             }
                         }
                     }
                 }
             }
         }
-        scope.status()
+        // At this point we have fully reduced ourselves.
+        //
+        // If any assignment failed, the whole parse failed.
+        //
+        // Otherwise, if something is blocked on name, we need to return pending.
+        //
+        // Otherwise, if something is blocked on an ID defined in a parent scope,
+        // then we need to return pending.
+        //
+        // Otherwise, if something is blocked on an ID defined in *my* scope,
+        // there's a cyclic definition and we can error immediately.
+        //
+        // Otherwise, we successfully parsed every assignment.
+
+        if !scope.failed.is_empty() {
+            return Err(ParseError::SubAssignmentFailed);
+        }
+
+        if let Some(name) = scope.blocked_on_name.keys().next() {
+            return Ok(ParseResult::PendingName(name.clone()));
+        }
+
+        // TODO: a bit of denormalization would remove the need for a linear
+        // scan here
+        for id in scope.blocked_on_id.keys() {
+            if !scope.id_to_name.contains_key(id) {
+                return Ok(ParseResult::PendingId(*id));
+            }
+        }
+        if !scope.blocked_on_id.is_empty() {
+            return Err(ParseError::CyclicAssignments);
+        }
+
+        // TODO: should maybe cache this key? also do we want to allow multiple
+        // top-level statements...? is that actually desirable in any way?
+        match scope.name_to_ids.get("_") {
+            None => Err(ParseError::BlockWithoutResult),
+            Some(ids) => {
+                // NOTE: Before I was using traits, the parse function actually
+                // moved the Scope value and ParseResult returned it back (or
+                // didn't). But I can't figure out how to do that in a way that
+                // is object-safe, and the trait approach seems otherwise
+                // superior to a variant. So this mutates itself until its in
+                // sort of an invalid state -- bad things would happen if the
+                // caller continued to use the scope after this.
+                let (result_expr, result_pos) = scope.complete.remove(ids.last().unwrap()).unwrap();
+                let assignments = scope
+                    .complete
+                    .drain()
+                    .map(|(id, (expr, _pos))| {
+                        let name = scope.id_to_name.remove(&id).unwrap();
+                        (RichIdentifier::new(id, name), expr)
+                    })
+                    .collect::<HashMap<_, _>>();
+
+                Ok(ParseResult::Complete(
+                    Expression::Compound(assignments, Box::new(result_expr.clone())),
+                    result_pos,
+                ))
+            }
+        }
     }
 
-    fn provide(&mut self, expr: Expression, pos: PartOfSpeech) {
-        todo!()
+    fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
+        let scope = &mut self.0;
+
+        if let Some(parses) = scope.blocked_on_name.remove(&id.name) {
+            for mut parse in parses {
+                parse.state.provide(id.clone(), pos);
+                scope.unblocked.push(parse);
+            }
+        }
+
+        if let Some(parses) = scope.blocked_on_id.remove(&id.id) {
+            for mut parse in parses {
+                parse.state.provide(id.clone(), pos);
+                scope.unblocked.push(parse);
+            }
+        }
     }
 }
 
@@ -740,7 +746,7 @@ mod tests {
                         "x" | "y" => Noun,
                         _ => panic!("unknown identifier"),
                     };
-                    call_stack.provide(Expression::id(RichIdentifier::new(0, name)), pos);
+                    call_stack.provide(RichIdentifier::new(0, name), pos);
                 }
             }
         }
@@ -920,8 +926,8 @@ mod tests {
 
     #[test]
     fn test_partial_parsing() {
-        fn id(name: &str) -> Expression {
-            Expression::id(RichIdentifier::new(0, name.to_string()))
+        fn id(name: &str) -> RichIdentifier {
+            RichIdentifier::new(0, name.to_string())
         }
         let mut call_stack = begin_parse("x + foo");
         k9::snapshot!(advance(&mut call_stack), "awaiting foo");
