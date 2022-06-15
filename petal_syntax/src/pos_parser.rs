@@ -289,9 +289,6 @@ trait Parsnip {
 }
 
 struct ExpressionParsnip(Vec<ParseFrame>);
-// TODO: do we really need blockparsnip to be its own type? why aren't we just
-// using scope directly?
-struct BlockParsnip(Scope);
 
 impl ExpressionParsnip {
     fn new(terms: Vec<Term>) -> Self {
@@ -366,7 +363,59 @@ impl ParseOperation {
     }
 }
 
-struct Scope {
+// It might seem strange that this needs an explicit reference to its parent
+// scope when an ExpressionParsnip doesn't. When it encounters an unknown name,
+// why doesn't it just return that fact and let the parent provide it?
+//
+// Well, consider a case like this:
+//
+//     foo = y * 2
+//       y = 10
+//
+// If we suspended the parse as soon as we encountered y, we would never resume
+// it again, because the parent can never provide y.
+//
+// Or consider this more subtle case:
+//
+//     foo = y * 2
+//       y = 10
+//     y = 20
+//
+// If we suspended when we saw the first y, then the parent tried to provide y,
+// we would have a bug. So we can only say "I am pending this value from the
+// outer scope" when we are in fact sure that the value will come from the outer
+// scope.
+//
+// But at the same time, consider a case like this:
+//
+//     y = 20
+//     foo = y * 2
+//       y = 10
+//
+// Now foo actually does reference the y from above -- from the outer scope. So
+// it needs to check with the outer scope immediately, before it continues on.
+//
+// We could have something like PendingImmediatelyAvailableName in ParseResult
+// and use that to signal to the parent that we should *check* if we already
+// know this value, but that gets a little complicated in the case where the
+// value is *partially* known -- that is, where the ID is known but the part of
+// speech has not yet been determined because it's waiting on a later value:
+//
+//     y = z
+//     foo = y * 2
+//       y = 10
+//     z = 20
+//
+// If foo says "hey I'm pending an immediately available name," then we turn
+// that into "okay actually hang on, I know that name, now you're pending this
+// ID." And we get back to it later.
+//
+// Anyway I guess that would actually be possible and eliminate the parent
+// reference. It either gets immediately supplied, suspended by ID, or it gets
+// resumed immediately with no answer. Hmm.
+//
+// Then you'd only need a shared allocator.
+struct BlockParsnip {
     name_to_ids: HashMap<String, Vec<Identifier>>,
     id_to_name: HashMap<Identifier, String>,
 
@@ -376,7 +425,7 @@ struct Scope {
     failed: HashMap<Identifier, ParseError>,
     unblocked: Vec<ParseOperation>,
 
-    parent_scope: Option<Rc<Scope>>,
+    parent: Option<Rc<BlockParsnip>>,
     allocator: Rc<RefCell<Allocator>>,
 }
 
@@ -402,22 +451,36 @@ enum LookupResult<'a> {
     Complete(Identifier, &'a Expression, PartOfSpeech),
 }
 
-impl Scope {
-    fn new(parent_scope: Option<Rc<Scope>>) -> Scope {
-        Scope {
+impl BlockParsnip {
+    fn new(parent: Option<Rc<BlockParsnip>>, assignments: Vec<Assignment>) -> Self {
+        let mut this = BlockParsnip {
             name_to_ids: HashMap::new(),
             id_to_name: HashMap::new(),
-            allocator: match &parent_scope {
+            allocator: match &parent {
                 None => Rc::new(RefCell::new(Allocator::new())),
-                Some(parent_scope) => parent_scope.allocator.clone(),
+                Some(parent) => Rc::clone(&parent.allocator),
             },
-            parent_scope,
+            parent,
             blocked_on_name: HashMap::new(),
             blocked_on_id: HashMap::new(),
             complete: HashMap::new(),
             failed: HashMap::new(),
             unblocked: vec![],
+        };
+
+        for assignment in assignments {
+            this.begin(assignment);
         }
+        // We need to begin elements from top-to-bottom, but every time we begin
+        // something we push it onto a stack. But I think it will be more
+        // efficient to parse from top-to-bottom as well, as I expect
+        // backreferences will be more common than forward references. This
+        // reverse should not alter the semantics or result of the parse in any
+        // way.
+        // TODO: is this actually better? Might be worth profiling when I have a
+        // nontrivial program to test it on.
+        this.unblocked.reverse();
+        this
     }
 
     fn add_builtin(&mut self, name: &str, pos: PartOfSpeech) {
@@ -466,9 +529,9 @@ impl Scope {
         if let Some(name) = self.id_to_name.get(id) {
             return name.clone();
         }
-        match &self.parent_scope {
+        match &self.parent {
             None => panic!("identifier not found"),
-            Some(scope) => scope.name_of_id(id),
+            Some(parent) => parent.name_of_id(id),
         }
     }
 
@@ -490,9 +553,9 @@ impl Scope {
                 .filter(|id| **id < as_of)
                 .map(Identifier::clone)
                 .last(),
-            None => match &self.parent_scope {
+            None => match &self.parent {
                 None => None,
-                Some(scope) => scope.lookup_previous_identifier(name, as_of),
+                Some(parent) => parent.lookup_previous_identifier(name, as_of),
             },
         }
     }
@@ -504,9 +567,9 @@ impl Scope {
                 .filter(|id| **id >= as_of)
                 .map(Identifier::clone)
                 .next(),
-            None => match &self.parent_scope {
+            None => match &self.parent {
                 None => None,
-                Some(scope) => scope.lookup_next_identifier(name, as_of),
+                Some(parent) => parent.lookup_next_identifier(name, as_of),
             },
         }
     }
@@ -533,9 +596,9 @@ impl Scope {
         // that would require either linearly scanning the blocked dictionaries
         // or storing an extra map. so we're taking advantage of the invariant
         // that we only have Identifiers for names that are pending
-        match &self.parent_scope {
+        match &self.parent {
             None => LookupResult::Pending(id),
-            Some(scope) => scope.lookup_by_id(id),
+            Some(parent) => parent.lookup_by_id(id),
         }
     }
 
@@ -562,42 +625,17 @@ impl Scope {
     }
 }
 
-impl BlockParsnip {
-    fn new(mut scope: Scope, assignments: Vec<Assignment>) -> Self {
-        for assignment in assignments {
-            scope.begin(assignment);
-        }
-        // We need to begin elements from top-to-bottom, but every time we begin
-        // something we push it onto a stack. But I think it will be more
-        // efficient to parse from top-to-bottom as well, as I expect
-        // backreferences will be more common than forward references. This
-        // reverse should not alter the semantics or result of the parse in any
-        // way.
-        // TODO: is this actually better? Might be worth profiling when I have a
-        // nontrivial program to test it on.
-        scope.unblocked.reverse();
-        BlockParsnip(scope)
-    }
-}
-
-fn parse_body(scope: Scope, assignments: Vec<Assignment>) -> Scope {
-    let mut parsnip = BlockParsnip::new(scope, assignments);
-    parsnip.parse();
-    parsnip.0
-}
-
 impl Parsnip for BlockParsnip {
     fn parse(&mut self) -> Result<ParseResult, ParseError> {
-        let scope = &mut self.0;
-        while let Some(ParseOperation { id, mut state }) = scope.unblocked.pop() {
+        while let Some(ParseOperation { id, mut state }) = self.unblocked.pop() {
             loop {
                 match state.parse() {
                     Err(e) => {
-                        scope.failed(id, e);
+                        self.failed(id, e);
                         break;
                     }
                     Ok(ParseResult::Complete(expr, pos)) => {
-                        scope.complete(id, expr, pos);
+                        self.complete(id, expr, pos);
                         break;
                     }
                     Ok(ParseResult::PendingId(prereq_id)) => {
@@ -606,19 +644,19 @@ impl Parsnip for BlockParsnip {
                     Ok(ParseResult::PendingName(prereq_name)) => {
                         // TODO: should add support for "not yet parsed but part of
                         // speech already known"
-                        match scope.lookup(&prereq_name, id) {
+                        match self.lookup(&prereq_name, id) {
                             LookupResult::Unknown => {
                                 // TODO: any way to do this without creating a
                                 // new op here?
-                                scope.blocked_on_name(prereq_name, ParseOperation::new(id, state));
+                                self.blocked_on_name(prereq_name, ParseOperation::new(id, state));
                                 break;
                             }
                             LookupResult::Pending(prereq_id) => {
-                                scope.blocked_on_id(prereq_id, ParseOperation::new(id, state));
+                                self.blocked_on_id(prereq_id, ParseOperation::new(id, state));
                                 break;
                             }
                             LookupResult::Failed(prereq_id, _) => {
-                                scope.failed(id, ParseError::BadReference(prereq_id));
+                                self.failed(id, ParseError::BadReference(prereq_id));
                                 break;
                             }
                             LookupResult::Complete(prereq_id, _expr, pos) => {
@@ -643,43 +681,43 @@ impl Parsnip for BlockParsnip {
         //
         // Otherwise, we successfully parsed every assignment.
 
-        if !scope.failed.is_empty() {
+        if !self.failed.is_empty() {
             return Err(ParseError::SubAssignmentFailed);
         }
 
-        if let Some(name) = scope.blocked_on_name.keys().next() {
+        if let Some(name) = self.blocked_on_name.keys().next() {
             return Ok(ParseResult::PendingName(name.clone()));
         }
 
         // TODO: a bit of denormalization would remove the need for a linear
         // scan here
-        for id in scope.blocked_on_id.keys() {
-            if !scope.id_to_name.contains_key(id) {
+        for id in self.blocked_on_id.keys() {
+            if !self.id_to_name.contains_key(id) {
                 return Ok(ParseResult::PendingId(*id));
             }
         }
-        if !scope.blocked_on_id.is_empty() {
+        if !self.blocked_on_id.is_empty() {
             return Err(ParseError::CyclicAssignments);
         }
 
         // TODO: should maybe cache this key? also do we want to allow multiple
         // top-level statements...? is that actually desirable in any way?
-        match scope.name_to_ids.get("_") {
+        match self.name_to_ids.get("_") {
             None => Err(ParseError::BlockWithoutResult),
             Some(ids) => {
                 // NOTE: Before I was using traits, the parse function actually
-                // moved the Scope value and ParseResult returned it back (or
+                // moved the Parsnip value and ParseResult returned it back (or
                 // didn't). But I can't figure out how to do that in a way that
                 // is object-safe, and the trait approach seems otherwise
                 // superior to a variant. So this mutates itself until its in
                 // sort of an invalid state -- bad things would happen if the
-                // caller continued to use the scope after this.
-                let (result_expr, result_pos) = scope.complete.remove(ids.last().unwrap()).unwrap();
-                let assignments = scope
+                // caller continued to use the parsnip after this.
+                let (result_expr, result_pos) = self.complete.remove(ids.last().unwrap()).unwrap();
+                let assignments = self
                     .complete
                     .drain()
                     .map(|(id, (expr, _pos))| {
-                        let name = scope.id_to_name.remove(&id).unwrap();
+                        let name = self.id_to_name.remove(&id).unwrap();
                         (RichIdentifier::new(id, name), expr)
                     })
                     .collect::<HashMap<_, _>>();
@@ -693,19 +731,17 @@ impl Parsnip for BlockParsnip {
     }
 
     fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
-        let scope = &mut self.0;
-
-        if let Some(parses) = scope.blocked_on_name.remove(&id.name) {
+        if let Some(parses) = self.blocked_on_name.remove(&id.name) {
             for mut parse in parses {
                 parse.state.provide(id.clone(), pos);
-                scope.unblocked.push(parse);
+                self.unblocked.push(parse);
             }
         }
 
-        if let Some(parses) = scope.blocked_on_id.remove(&id.id) {
+        if let Some(parses) = self.blocked_on_id.remove(&id.id) {
             for mut parse in parses {
                 parse.state.provide(id.clone(), pos);
-                scope.unblocked.push(parse);
+                self.unblocked.push(parse);
             }
         }
     }
@@ -1013,23 +1049,23 @@ mod tests {
         }
     }
 
-    fn print_assignments(scope: &Scope) -> String {
+    fn print_assignments(block: &BlockParsnip) -> String {
         let mut disambiguator = Disambiguator::new();
 
-        let completes = scope
+        let completes = block
             .complete
             .iter()
             .map(|(id, (expr, pos))| (*id, AssignmentStatus::Complete(expr, pos)));
-        let failures = scope
+        let failures = block
             .failed
             .iter()
             .map(|(id, error)| (*id, AssignmentStatus::Failed(error)));
-        let cyclics = scope.blocked_on_id.iter().flat_map(|(missing_id, parses)| {
+        let cyclics = block.blocked_on_id.iter().flat_map(|(missing_id, parses)| {
             parses
                 .iter()
                 .map(|parse| (parse.id, AssignmentStatus::Cyclic(missing_id)))
         });
-        let pendings = scope
+        let pendings = block
             .blocked_on_name
             .iter()
             .flat_map(|(missing_name, parses)| {
@@ -1048,7 +1084,7 @@ mod tests {
         let mut result = String::new();
 
         for (id, status) in kvps {
-            let name = scope.name_of_id(&id);
+            let name = block.name_of_id(&id);
             let rich_id = RichIdentifier::new(id, name);
             disambiguator.see(rich_id.clone());
 
@@ -1081,7 +1117,7 @@ mod tests {
                     ));
                 }
                 AssignmentStatus::Failed(ParseError::BadReference(prereq_id)) => {
-                    let prereq_name = scope.name_of_id(prereq_id);
+                    let prereq_name = block.name_of_id(prereq_id);
                     let rich_prereq_id = RichIdentifier::new(*prereq_id, prereq_name);
                     disambiguator.see(rich_prereq_id.clone());
                     result.push_str(&format!(
@@ -1098,7 +1134,7 @@ mod tests {
                     ));
                 }
                 AssignmentStatus::Cyclic(prereq_id) => {
-                    let prereq_name = scope.name_of_id(prereq_id);
+                    let prereq_name = block.name_of_id(prereq_id);
                     let rich_prereq_id = RichIdentifier::new(*prereq_id, prereq_name);
                     disambiguator.see(rich_prereq_id.clone());
                     result.push_str(&format!(
@@ -1120,19 +1156,17 @@ mod tests {
     }
 
     fn test_body(assignments: Vec<Assignment>) -> String {
-        let mut top_level_scope = Scope::new(None);
-        top_level_scope.add_builtin("+", Verb(Arity::Binary));
-        top_level_scope.add_builtin("*", Verb(Arity::Binary));
-        top_level_scope.add_builtin(".", Adverb(Arity::Binary, Arity::Binary));
-        top_level_scope.add_builtin("fold", Adverb(Arity::Unary, Arity::Unary));
-        top_level_scope.add_builtin("flip", Adverb(Arity::Unary, Arity::Binary));
-        top_level_scope.add_builtin("x", Noun);
-        top_level_scope.add_builtin("y", Noun);
-        let top_level_scope = Rc::new(top_level_scope);
-        let scope = Scope::new(Some(Rc::clone(&top_level_scope)));
-        let mut parsnip = BlockParsnip::new(scope, assignments);
+        let mut prelude = BlockParsnip::new(None, vec![]);
+        prelude.add_builtin("+", Verb(Arity::Binary));
+        prelude.add_builtin("*", Verb(Arity::Binary));
+        prelude.add_builtin(".", Adverb(Arity::Binary, Arity::Binary));
+        prelude.add_builtin("fold", Adverb(Arity::Unary, Arity::Unary));
+        prelude.add_builtin("flip", Adverb(Arity::Unary, Arity::Binary));
+        prelude.add_builtin("x", Noun);
+        prelude.add_builtin("y", Noun);
+        let mut parsnip = BlockParsnip::new(Some(Rc::new(prelude)), assignments);
         parsnip.parse();
-        print_assignments(&parsnip.0)
+        print_assignments(&parsnip)
     }
 
     #[test]
