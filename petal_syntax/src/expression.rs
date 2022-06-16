@@ -111,11 +111,13 @@ impl fmt::Display for Expression {
         match self {
             Compound(assignments, expr) => {
                 write!(f, "(let (")?;
-                for (i, (id, expr)) in assignments.iter().enumerate() {
+                let mut keys: Vec<&RichIdentifier> = assignments.keys().collect();
+                keys.sort_by_key(|rich_id| rich_id.id);
+                for (i, id) in keys.iter().enumerate() {
                     if i != 0 {
                         write!(f, " ")?;
                     }
-                    write!(f, "({} {})", id, expr)?;
+                    write!(f, "({} {})", id, assignments.get(id).unwrap())?;
                 }
                 write!(f, ") {})", expr)
             }

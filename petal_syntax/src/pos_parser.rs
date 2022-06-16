@@ -4,6 +4,13 @@ use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 type Statement = crate::statement::Statement<Term>;
 
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    Forwards,
+    Backwards,
+}
+use Direction::*;
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Arity {
     Unary,
@@ -62,12 +69,21 @@ impl ParseFrame {
     }
 }
 
+// PollingName: if you have the name, give it to me. If you don't, resume me
+// anyway.
+//
+// PendingName: don't resume me until you have the name.
+//
+// We could do away with PollingName if we could synchronously check the parent
+// scope to see if an identifier is defined. However, this requires having a
+// reference to the parent scope, which complicated ownership stuff. We'd
+// actually need like an Rc<RefCell<BlockParsnip>>, and then the parsnip trait
+// would only be implementable on Rc<RefCell<BlockParsnip>>, and that's all
+// gross. But maybe worth it? The inverted control flow that PollingName
+// begets is really pretty complicated.
 enum ParseResult {
     Complete(Expression, PartOfSpeech),
-    // PollingName: if you have the name, give it to me. If you don't, resume me
-    // anyway.
     PollingName(String),
-    // PendingName: don't resume me until you have the name.
     PendingName(String),
     PendingId(Identifier),
 }
@@ -530,13 +546,6 @@ impl BlockParsnip {
         })
     }
 
-    // TODO: this is stupidly O(number of definitions), but because everything
-    // is sorted, it could easily be O(log(number of definitions)).
-    fn lookup_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
-        self.lookup_previous_identifier(name, as_of)
-            .or_else(|| self.lookup_next_identifier(name, as_of))
-    }
-
     fn lookup_by_id(&self, id: Identifier) -> LookupResult {
         if let Some((expr, pos)) = self.complete.get(&id) {
             return LookupResult::Complete(id, expr, *pos);
@@ -552,8 +561,22 @@ impl BlockParsnip {
         LookupResult::Pending(id)
     }
 
-    fn lookup(&self, name: &str, as_of: Identifier) -> LookupResult {
-        match self.lookup_identifier(name, as_of) {
+    // TODO: this is stupidly O(number of definitions), but because everything
+    // is sorted, it could easily be O(log(number of definitions)).
+    fn lookup_identifier(
+        &self,
+        name: &str,
+        as_of: Identifier,
+        dir: Direction,
+    ) -> Option<Identifier> {
+        match dir {
+            Backwards => self.lookup_previous_identifier(name, as_of),
+            Forwards => self.lookup_next_identifier(name, as_of),
+        }
+    }
+
+    fn lookup(&self, name: &str, as_of: Identifier, dir: Direction) -> LookupResult {
+        match self.lookup_identifier(name, as_of, dir) {
             Some(id) => self.lookup_by_id(id),
             None => LookupResult::Unknown,
         }
@@ -579,8 +602,9 @@ impl BlockParsnip {
         &mut self,
         mut op: ParseOperation,
         name: &String,
+        dir: Direction,
     ) -> Option<ParseOperation> {
-        match self.lookup(&name, op.id) {
+        match self.lookup(&name, op.id, dir) {
             // TODO: should add support for "not yet parsed but part of
             // speech already known"
             LookupResult::Unknown => Some(op),
@@ -604,11 +628,25 @@ impl BlockParsnip {
 
 impl Parsnip for BlockParsnip {
     fn not_yet_known(&mut self, name: &String) {
-        if let Some(parses) = self.polling_name.remove(name) {
-            for mut parse in parses {
-                parse.state.not_yet_known(name);
-                self.unblocked.push(parse);
+        // Now that we know that it's not present in the parent, we can check
+        // for forward bindings. We only do this for pending, not polling,
+        // because polling operations need to resume to themselves first -- they
+        // shouldn't look forward in the outer scope until they're sure that
+        // they don't have the value in their inner scope.
+
+        // TODO: It's dumb that we do the lookup once for everyone waiting on
+        // this, instead of looking it up once and providing it to everyone.
+        for op in self.blocked_on_name.remove(name).into_iter().flatten() {
+            if let Some(op) = self.try_providing_name(op, name, Forwards) {
+                self.blocked_on_name(name.clone(), op);
             }
+        }
+
+        // TODO: does this need to be a hashmap at all? can't it only ever have
+        // one element?
+        for mut op in self.polling_name.remove(name).into_iter().flatten() {
+            op.state.not_yet_known(name);
+            self.unblocked.push(op);
         }
     }
 
@@ -650,13 +688,13 @@ impl Parsnip for BlockParsnip {
                     self.blocked_on_id(prereq_id, op);
                 }
                 Ok(ParseResult::PendingName(prereq_name)) => {
-                    if let Some(op) = self.try_providing_name(op, &prereq_name) {
+                    if let Some(op) = self.try_providing_name(op, &prereq_name, Backwards) {
                         self.blocked_on_name(prereq_name.clone(), op);
                         return Ok(ParseResult::PollingName(prereq_name));
                     }
                 }
                 Ok(ParseResult::PollingName(prereq_name)) => {
-                    if let Some(op) = self.try_providing_name(op, &prereq_name) {
+                    if let Some(op) = self.try_providing_name(op, &prereq_name, Backwards) {
                         self.polling_name(prereq_name.clone(), op);
                         return Ok(ParseResult::PollingName(prereq_name));
                     }
@@ -736,7 +774,6 @@ impl Parsnip for BlockParsnip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expression::Atom;
 
     fn show_annotated_expr(annotated_expr: &(Expression, PartOfSpeech)) -> String {
         let (expr, pos) = annotated_expr;
@@ -1002,27 +1039,35 @@ mod tests {
         Pending(&'a str),
     }
 
-    fn rewrite_atoms<F: FnMut(&Atom) -> Atom>(expr: &Expression, f: &mut F) -> Expression {
+    fn rewrite_ids<F: FnMut(&RichIdentifier) -> RichIdentifier>(
+        expr: &Expression,
+        f: &mut F,
+    ) -> Expression {
         use Expression::*;
+
         match expr {
-            Atom(a) => Atom(f(a)),
-            Parens(exprs) => Parens(Box::new(rewrite_atoms(exprs, f))),
+            Atom(crate::expression::Atom::Identifier(rich_id)) => {
+                Atom(crate::expression::Atom::Identifier(f(rich_id)))
+            }
+            Atom(_) => expr.clone(),
+            Parens(exprs) => Parens(Box::new(rewrite_ids(exprs, f))),
             Implicit(x) => Implicit(*x),
-            Tuple(exprs) => Tuple(exprs.iter().map(|expr| rewrite_atoms(expr, f)).collect()),
-            Brackets(exprs) => Brackets(exprs.iter().map(|expr| rewrite_atoms(expr, f)).collect()),
+            Tuple(exprs) => Tuple(exprs.iter().map(|expr| rewrite_ids(expr, f)).collect()),
+            Brackets(exprs) => Brackets(exprs.iter().map(|expr| rewrite_ids(expr, f)).collect()),
             UnaryApplication(expr1, expr2) => {
-                Expression::unary(rewrite_atoms(expr1, f), rewrite_atoms(expr2, f))
+                Expression::unary(rewrite_ids(expr1, f), rewrite_ids(expr2, f))
             }
             BinaryApplication(expr1, expr2, expr3) => Expression::binary(
-                rewrite_atoms(expr1, f),
-                rewrite_atoms(expr2, f),
-                rewrite_atoms(expr3, f),
+                rewrite_ids(expr1, f),
+                rewrite_ids(expr2, f),
+                rewrite_ids(expr3, f),
             ),
-            Compound(map, expr) => Expression::Compound(
-                map.iter()
-                    .map(|(id, expr)| (id.clone(), rewrite_atoms(expr, f)))
+            Compound(bindings, expr) => Expression::Compound(
+                bindings
+                    .iter()
+                    .map(|(id, expr)| (f(id), rewrite_ids(expr, f)))
                     .collect(),
-                Box::new(rewrite_atoms(expr, f)),
+                Box::new(rewrite_ids(expr, f)),
             ),
         }
     }
@@ -1074,18 +1119,11 @@ mod tests {
 
             match status {
                 AssignmentStatus::Complete(expr, pos) => {
-                    // TODO: do this with mutation?
-                    let mut f = |atom: &Atom| match atom {
-                        Atom::Identifier(rich_id) => {
-                            disambiguator.see(rich_id.clone());
-                            Atom::Identifier(RichIdentifier::new(
-                                rich_id.id,
-                                disambiguator.view(rich_id),
-                            ))
-                        }
-                        _ => atom.clone(),
+                    let mut f = |rich_id: &RichIdentifier| {
+                        disambiguator.see(rich_id.clone());
+                        RichIdentifier::new(rich_id.id, disambiguator.view(rich_id))
                     };
-                    let expr = rewrite_atoms(&expr, &mut f);
+                    let expr = rewrite_ids(&expr, &mut f);
 
                     result.push_str(&format!(
                         "{} ({}) = {}",
@@ -1297,6 +1335,118 @@ bar = 1"
 foo (n) = (+ bar 1)
 bar (n) = 1
 "
+        );
+    }
+
+    #[test]
+    fn test_nested_blocks() {
+        k9::snapshot!(
+            test_body(
+                "
+foo =
+  x =
+    y = 10
+    z = 20
+    y + z
+  x
+"
+            ),
+            "foo (n) = (let ((x (let ((y 10) (z 20)) (+ y z)))) x)"
+        );
+    }
+
+    #[test]
+    fn test_block_reads_from_outer_scope() {
+        k9::snapshot!(
+            test_body(
+                "
+foo = 10
+bar = x
+  x = y
+    y = foo
+"
+            ),
+            "
+foo (n) = 10
+bar (n) = (let ((x (let ((y foo)) y))) x)
+"
+        );
+
+        // TODO: this is wrong!
+        k9::snapshot!(
+            test_body(
+                "
+foo = 10
+bar = x
+  x = foo
+    foo = 20
+"
+            ),
+            "
+foo (n) = 10
+bar (n) = (let ((x (let ((foo_1 20)) foo))) x)
+"
+        );
+    }
+
+    #[test]
+    fn nested_block_forward_references() {
+        k9::snapshot!(
+            test_body(
+                "
+foo = x
+  x = y
+    y = bar
+bar = 10
+"
+            ),
+            "
+foo (n) = (let ((x (let ((y bar)) y))) x)
+bar (n) = 10
+"
+        );
+
+        k9::snapshot!(
+            test_body(
+                "
+foo = x
+  x = y
+    y = bar
+      bar = 10
+bar = 20
+"
+            ),
+            "
+foo (n) = (let ((x (let ((y (let ((bar 10)) bar))) y))) x)
+bar_1 (n) = 20
+"
+        );
+    }
+
+    #[test]
+    fn block_without_value() {
+        k9::snapshot!(
+            test_body(
+                "
+foo =
+  x = 10
+"
+            ),
+            "foo failed: BlockWithoutResult"
+        );
+    }
+
+    #[test]
+    fn subassignment_failure() {
+        k9::snapshot!(
+            test_body(
+                "
+foo =
+  x = [+]
+  10
+"
+            ),
+            "foo failed: SubAssignmentFailed"
         );
     }
 }
