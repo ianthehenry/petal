@@ -19,9 +19,9 @@ use pos_parser::{ParseError, PartOfSpeech};
 
 pub fn parse(input: &str) -> Result<(Expression, PartOfSpeech), ParseError> {
     let tokens = tokenizer::tokenize(input);
-    let terms = statement_parser::parse_expression(tokens).unwrap();
-    let terms = semicolons::resolve_expression(terms);
-    let terms = op_splitter::split_expression(terms);
-    let terms = coefficient_grouper::group(terms);
-    pos_parser::just_parse(terms)
+    let statements = statement_parser::parse_tokens(tokens).unwrap();
+    let statements = semicolons::rewrite(statements);
+    let statements = op_splitter::rewrite(statements);
+    let statements = coefficient_grouper::rewrite(statements);
+    pos_parser::just_parse(statements)
 }

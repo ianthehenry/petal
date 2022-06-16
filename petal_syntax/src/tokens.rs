@@ -13,13 +13,13 @@ impl<'a> Tokens<'a> {
     // TODO: I would like to use this function and make the constructor private,
     // but for some reason it doesn't work. I think some kind of lifetime
     // trouble.
-    pub(super) fn first(&'a self) -> &'a LocatedToken {
-        &self.0[0]
-    }
+    // pub(super) fn first(&'a self) -> &'a LocatedToken {
+    //     &self.0[0]
+    // }
 
-    pub(super) fn rest(&self) -> Self {
-        Tokens(&self.0[1..])
-    }
+    // pub(super) fn rest(&self) -> Self {
+    //     Tokens(&self.0[1..])
+    // }
 
     pub(super) fn is_empty(&self) -> bool {
         self.0.is_empty()

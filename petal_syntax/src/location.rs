@@ -1,6 +1,7 @@
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(super) struct Location {
     offset: usize,
     line: u32,

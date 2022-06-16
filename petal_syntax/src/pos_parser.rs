@@ -2,6 +2,8 @@ use crate::expression::{Builtin, Expression, Identifier, RichIdentifier};
 use crate::terms::Term;
 use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
+type Statement = crate::statement::Statement<Term>;
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Arity {
     Unary,
@@ -62,6 +64,10 @@ impl ParseFrame {
 
 enum ParseResult {
     Complete(Expression, PartOfSpeech),
+    // PollingName: if you have the name, give it to me. If you don't, resume me
+    // anyway.
+    PollingName(String),
+    // PendingName: don't resume me until you have the name.
     PendingName(String),
     PendingId(Identifier),
 }
@@ -268,22 +274,22 @@ fn reduce_stack(stack: &mut Vec<Option<(Expression, PartOfSpeech)>>) {
     }
 }
 
-pub(super) fn just_parse(terms: Vec<Term>) -> Result<(Expression, PartOfSpeech), ParseError> {
-    match ExpressionParsnip::new(terms).parse()? {
+pub(super) fn just_parse(
+    statements: Vec<Statement>,
+) -> Result<(Expression, PartOfSpeech), ParseError> {
+    let allocator = Rc::new(RefCell::new(Allocator::new()));
+    match BlockParsnip::new(allocator, statements).parse()? {
         ParseResult::Complete(expr, pos) => Ok((expr, pos)),
-        ParseResult::PendingName(_) | ParseResult::PendingId(_) => panic!("partial parse"),
+        ParseResult::PendingName(_) | ParseResult::PollingName(_) | ParseResult::PendingId(_) => {
+            panic!("partial parse")
+        }
     }
-}
-
-struct Assignment {
-    name: String,
-    expression: Vec<Term>,
 }
 
 // A "parsnip" is a parsing computation that can be suspended and resumed. A
 // better name might be something with "fiber" in it, but that's not as fun.
 trait Parsnip {
-    // TODO: this could be like resume-with-value. i wonder how that would look.
+    fn not_yet_known(&mut self, name: &String);
     fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech);
     fn parse(&mut self) -> Result<ParseResult, ParseError>;
 }
@@ -297,6 +303,10 @@ impl ExpressionParsnip {
 }
 
 impl Parsnip for ExpressionParsnip {
+    fn not_yet_known(&mut self, _name: &String) {
+        panic!("expressions never poll")
+    }
+
     fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
         let top_frame = self.0.last_mut().unwrap();
         top_frame.stack.push(Some((Expression::id(id), pos)));
@@ -363,69 +373,17 @@ impl ParseOperation {
     }
 }
 
-// It might seem strange that this needs an explicit reference to its parent
-// scope when an ExpressionParsnip doesn't. When it encounters an unknown name,
-// why doesn't it just return that fact and let the parent provide it?
-//
-// Well, consider a case like this:
-//
-//     foo = y * 2
-//       y = 10
-//
-// If we suspended the parse as soon as we encountered y, we would never resume
-// it again, because the parent can never provide y.
-//
-// Or consider this more subtle case:
-//
-//     foo = y * 2
-//       y = 10
-//     y = 20
-//
-// If we suspended when we saw the first y, then the parent tried to provide y,
-// we would have a bug. So we can only say "I am pending this value from the
-// outer scope" when we are in fact sure that the value will come from the outer
-// scope.
-//
-// But at the same time, consider a case like this:
-//
-//     y = 20
-//     foo = y * 2
-//       y = 10
-//
-// Now foo actually does reference the y from above -- from the outer scope. So
-// it needs to check with the outer scope immediately, before it continues on.
-//
-// We could have something like PendingImmediatelyAvailableName in ParseResult
-// and use that to signal to the parent that we should *check* if we already
-// know this value, but that gets a little complicated in the case where the
-// value is *partially* known -- that is, where the ID is known but the part of
-// speech has not yet been determined because it's waiting on a later value:
-//
-//     y = z
-//     foo = y * 2
-//       y = 10
-//     z = 20
-//
-// If foo says "hey I'm pending an immediately available name," then we turn
-// that into "okay actually hang on, I know that name, now you're pending this
-// ID." And we get back to it later.
-//
-// Anyway I guess that would actually be possible and eliminate the parent
-// reference. It either gets immediately supplied, suspended by ID, or it gets
-// resumed immediately with no answer. Hmm.
-//
-// Then you'd only need a shared allocator.
 struct BlockParsnip {
     name_to_ids: HashMap<String, Vec<Identifier>>,
     id_to_name: HashMap<Identifier, String>,
 
+    polling_name: HashMap<String, Vec<ParseOperation>>,
     blocked_on_name: HashMap<String, Vec<ParseOperation>>,
     blocked_on_id: HashMap<Identifier, Vec<ParseOperation>>,
     complete: HashMap<Identifier, (Expression, PartOfSpeech)>,
     failed: HashMap<Identifier, ParseError>,
     unblocked: Vec<ParseOperation>,
 
-    parent: Option<Rc<BlockParsnip>>,
     allocator: Rc<RefCell<Allocator>>,
 }
 
@@ -452,15 +410,12 @@ enum LookupResult<'a> {
 }
 
 impl BlockParsnip {
-    fn new(parent: Option<Rc<BlockParsnip>>, assignments: Vec<Assignment>) -> Self {
+    fn new(allocator: Rc<RefCell<Allocator>>, statements: Vec<Statement>) -> Self {
         let mut this = BlockParsnip {
             name_to_ids: HashMap::new(),
             id_to_name: HashMap::new(),
-            allocator: match &parent {
-                None => Rc::new(RefCell::new(Allocator::new())),
-                Some(parent) => Rc::clone(&parent.allocator),
-            },
-            parent,
+            allocator,
+            polling_name: HashMap::new(),
             blocked_on_name: HashMap::new(),
             blocked_on_id: HashMap::new(),
             complete: HashMap::new(),
@@ -468,8 +423,8 @@ impl BlockParsnip {
             unblocked: vec![],
         };
 
-        for assignment in assignments {
-            this.begin(assignment);
+        for statement in statements {
+            this.begin(statement);
         }
         // We need to begin elements from top-to-bottom, but every time we begin
         // something we push it onto a stack. But I think it will be more
@@ -483,22 +438,34 @@ impl BlockParsnip {
         this
     }
 
-    fn add_builtin(&mut self, name: &str, pos: PartOfSpeech) {
-        let name = name.to_string();
-        let id = self.learn_name(name.clone());
-        self.complete
-            .insert(id, (Expression::id(RichIdentifier::new(id, name)), pos));
+    fn begin(&mut self, statement: Statement) {
+        match statement {
+            Statement::SimpleAssignment(name, terms) => {
+                let id = self.learn_name(name);
+                self.unblocked.push(ParseOperation::new(
+                    id,
+                    Box::new(ExpressionParsnip::new(terms)),
+                ));
+            }
+            Statement::CompoundAssignment(name, statements) => {
+                let id = self.learn_name(name);
+                self.unblocked.push(ParseOperation::new(
+                    id,
+                    Box::new(BlockParsnip::new(Rc::clone(&self.allocator), statements)),
+                ));
+            }
+            Statement::Expression(terms) => {
+                // TODO: another case where we could reference a constant or something
+                self.begin(Statement::SimpleAssignment("_".to_string(), terms))
+            }
+        }
     }
 
-    fn begin(&mut self, assignment: Assignment) {
-        let Assignment { name, expression } = assignment;
-        let frame = ParseFrame::new(expression, identity);
-        let call_stack = vec![frame];
-        let id = self.learn_name(name);
-        self.unblocked.push(ParseOperation::new(
-            id,
-            Box::new(ExpressionParsnip(call_stack)),
-        ));
+    fn polling_name(&mut self, prereq_name: String, parse: ParseOperation) {
+        self.polling_name
+            .entry(prereq_name)
+            .or_insert_with(Vec::new)
+            .push(parse);
     }
 
     fn blocked_on_name(&mut self, prereq_name: String, parse: ParseOperation) {
@@ -529,10 +496,7 @@ impl BlockParsnip {
         if let Some(name) = self.id_to_name.get(id) {
             return name.clone();
         }
-        match &self.parent {
-            None => panic!("identifier not found"),
-            Some(parent) => parent.name_of_id(id),
-        }
+        panic!("identifier not found");
     }
 
     fn complete(&mut self, id: Identifier, expr: Expression, pos: PartOfSpeech) {
@@ -547,41 +511,30 @@ impl BlockParsnip {
     }
 
     fn lookup_previous_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
-        match self.name_to_ids.get(name) {
-            Some(bindings) => bindings
+        self.name_to_ids.get(name).and_then(|bindings| {
+            bindings
                 .iter()
                 .filter(|id| **id < as_of)
                 .map(Identifier::clone)
-                .last(),
-            None => match &self.parent {
-                None => None,
-                Some(parent) => parent.lookup_previous_identifier(name, as_of),
-            },
-        }
+                .last()
+        })
     }
 
     fn lookup_next_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
-        match self.name_to_ids.get(name) {
-            Some(bindings) => bindings
+        self.name_to_ids.get(name).and_then(|bindings| {
+            bindings
                 .iter()
                 .filter(|id| **id >= as_of)
                 .map(Identifier::clone)
-                .next(),
-            None => match &self.parent {
-                None => None,
-                Some(parent) => parent.lookup_next_identifier(name, as_of),
-            },
-        }
+                .next()
+        })
     }
 
-    // TODO: this is stupidly (number of definitions * depth of scope). because
-    // everything is sorted, this could easily be (log(number of definitions) *
-    // depth of scope)
+    // TODO: this is stupidly O(number of definitions), but because everything
+    // is sorted, it could easily be O(log(number of definitions)).
     fn lookup_identifier(&self, name: &str, as_of: Identifier) -> Option<Identifier> {
-        match self.lookup_previous_identifier(name, as_of) {
-            Some(id) => Some(id),
-            None => self.lookup_next_identifier(name, as_of),
-        }
+        self.lookup_previous_identifier(name, as_of)
+            .or_else(|| self.lookup_next_identifier(name, as_of))
     }
 
     fn lookup_by_id(&self, id: Identifier) -> LookupResult {
@@ -596,10 +549,7 @@ impl BlockParsnip {
         // that would require either linearly scanning the blocked dictionaries
         // or storing an extra map. so we're taking advantage of the invariant
         // that we only have Identifiers for names that are pending
-        match &self.parent {
-            None => LookupResult::Pending(id),
-            Some(parent) => parent.lookup_by_id(id),
-        }
+        LookupResult::Pending(id)
     }
 
     fn lookup(&self, name: &str, as_of: Identifier) -> LookupResult {
@@ -623,46 +573,92 @@ impl BlockParsnip {
         vec.push(id);
         id
     }
+
+    // returns the ParseOperation if it does not handle it
+    fn try_providing_name(
+        &mut self,
+        mut op: ParseOperation,
+        name: &String,
+    ) -> Option<ParseOperation> {
+        match self.lookup(&name, op.id) {
+            // TODO: should add support for "not yet parsed but part of
+            // speech already known"
+            LookupResult::Unknown => Some(op),
+            LookupResult::Pending(prereq_id) => {
+                self.blocked_on_id(prereq_id, op);
+                None
+            }
+            LookupResult::Failed(prereq_id, _) => {
+                self.failed(op.id, ParseError::BadReference(prereq_id));
+                None
+            }
+            LookupResult::Complete(prereq_id, _expr, pos) => {
+                op.state
+                    .provide(RichIdentifier::new(prereq_id, name.clone()), pos);
+                self.unblocked.push(op);
+                None
+            }
+        }
+    }
 }
 
 impl Parsnip for BlockParsnip {
+    fn not_yet_known(&mut self, name: &String) {
+        if let Some(parses) = self.polling_name.remove(name) {
+            for mut parse in parses {
+                parse.state.not_yet_known(name);
+                self.unblocked.push(parse);
+            }
+        }
+    }
+
+    fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
+        if let Some(parses) = self.polling_name.remove(&id.name) {
+            for mut parse in parses {
+                parse.state.provide(id.clone(), pos);
+                self.unblocked.push(parse);
+            }
+        }
+
+        if let Some(parses) = self.blocked_on_name.remove(&id.name) {
+            for mut parse in parses {
+                parse.state.provide(id.clone(), pos);
+                self.unblocked.push(parse);
+            }
+        }
+
+        if let Some(parses) = self.blocked_on_id.remove(&id.id) {
+            for mut parse in parses {
+                parse.state.provide(id.clone(), pos);
+                self.unblocked.push(parse);
+            }
+        }
+    }
+
     fn parse(&mut self) -> Result<ParseResult, ParseError> {
-        while let Some(ParseOperation { id, mut state }) = self.unblocked.pop() {
-            loop {
-                match state.parse() {
-                    Err(e) => {
-                        self.failed(id, e);
-                        break;
+        assert!(self.polling_name.is_empty());
+
+        while let Some(mut op) = self.unblocked.pop() {
+            match op.state.parse() {
+                Err(e) => {
+                    self.failed(op.id, e);
+                }
+                Ok(ParseResult::Complete(expr, pos)) => {
+                    self.complete(op.id, expr, pos);
+                }
+                Ok(ParseResult::PendingId(prereq_id)) => {
+                    self.blocked_on_id(prereq_id, op);
+                }
+                Ok(ParseResult::PendingName(prereq_name)) => {
+                    if let Some(op) = self.try_providing_name(op, &prereq_name) {
+                        self.blocked_on_name(prereq_name.clone(), op);
+                        return Ok(ParseResult::PollingName(prereq_name));
                     }
-                    Ok(ParseResult::Complete(expr, pos)) => {
-                        self.complete(id, expr, pos);
-                        break;
-                    }
-                    Ok(ParseResult::PendingId(prereq_id)) => {
-                        todo!()
-                    }
-                    Ok(ParseResult::PendingName(prereq_name)) => {
-                        // TODO: should add support for "not yet parsed but part of
-                        // speech already known"
-                        match self.lookup(&prereq_name, id) {
-                            LookupResult::Unknown => {
-                                // TODO: any way to do this without creating a
-                                // new op here?
-                                self.blocked_on_name(prereq_name, ParseOperation::new(id, state));
-                                break;
-                            }
-                            LookupResult::Pending(prereq_id) => {
-                                self.blocked_on_id(prereq_id, ParseOperation::new(id, state));
-                                break;
-                            }
-                            LookupResult::Failed(prereq_id, _) => {
-                                self.failed(id, ParseError::BadReference(prereq_id));
-                                break;
-                            }
-                            LookupResult::Complete(prereq_id, _expr, pos) => {
-                                state.provide(RichIdentifier::new(prereq_id, prereq_name), pos);
-                            }
-                        }
+                }
+                Ok(ParseResult::PollingName(prereq_name)) => {
+                    if let Some(op) = self.try_providing_name(op, &prereq_name) {
+                        self.polling_name(prereq_name.clone(), op);
+                        return Ok(ParseResult::PollingName(prereq_name));
                     }
                 }
             }
@@ -700,6 +696,12 @@ impl Parsnip for BlockParsnip {
             return Err(ParseError::CyclicAssignments);
         }
 
+        // TODO: in order to use this to drive a repl, we need to have some way
+        // to prevent checking for completes. I think the right approach is to
+        // make this return a "I am ready to be done" status, and have the
+        // caller decide to invoke some kind of "finalize" method to extract the
+        // actual expression/POS at its discretion.
+
         // TODO: should maybe cache this key? also do we want to allow multiple
         // top-level statements...? is that actually desirable in any way?
         match self.name_to_ids.get("_") {
@@ -729,22 +731,6 @@ impl Parsnip for BlockParsnip {
             }
         }
     }
-
-    fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
-        if let Some(parses) = self.blocked_on_name.remove(&id.name) {
-            for mut parse in parses {
-                parse.state.provide(id.clone(), pos);
-                self.unblocked.push(parse);
-            }
-        }
-
-        if let Some(parses) = self.blocked_on_id.remove(&id.id) {
-            for mut parse in parses {
-                parse.state.provide(id.clone(), pos);
-                self.unblocked.push(parse);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -771,7 +757,8 @@ mod tests {
         loop {
             match call_stack.parse()? {
                 ParseResult::Complete(expr, pos) => return Ok((expr, pos)),
-                ParseResult::PendingId(name) => todo!(),
+                ParseResult::PendingId(_) => todo!(),
+                ParseResult::PollingName(_) => todo!(),
                 ParseResult::PendingName(name) => {
                     let pos = match name.as_str() {
                         "+" | "*" => Verb(Arity::Binary),
@@ -814,6 +801,7 @@ mod tests {
         match call_stack.parse() {
             Ok(ParseResult::Complete(expr, pos)) => show_annotated_expr(&(expr, pos)),
             Ok(ParseResult::PendingName(id)) => format!("awaiting {}", id),
+            Ok(ParseResult::PollingName(_)) => todo!(),
             Ok(ParseResult::PendingId(_)) => todo!(),
             Err(ParseError::DidNotFullyReduce(exprs)) => {
                 format!("incomplete parse: {}", show_annotated_exprs(exprs))
@@ -975,11 +963,8 @@ mod tests {
         k9::snapshot!(advance(&mut call_stack), "n:(+ x foo)");
     }
 
-    fn assign(name: &str, expr: &str) -> Assignment {
-        Assignment {
-            name: name.to_string(),
-            expression: preparse(expr),
-        }
+    fn assign(name: &str, expr: &str) -> Statement {
+        Statement::SimpleAssignment(name.to_string(), preparse(expr))
     }
 
     struct Disambiguator {
@@ -996,14 +981,11 @@ mod tests {
         }
 
         fn see(&mut self, rich_id: RichIdentifier) {
-            match self.name_seen_at.get(&rich_id) {
-                None => {
-                    let ix = self.name_indices.entry(rich_id.name.clone()).or_insert(0);
-                    self.name_seen_at.insert(rich_id, *ix);
-                    *ix = *ix + 1;
-                }
-                Some(name_index) => (),
-            };
+            if self.name_seen_at.get(&rich_id).is_none() {
+                let ix = self.name_indices.entry(rich_id.name.clone()).or_insert(0);
+                self.name_seen_at.insert(rich_id, *ix);
+                *ix = *ix + 1;
+            }
         }
 
         fn view(&self, rich_id: &RichIdentifier) -> String {
@@ -1155,18 +1137,38 @@ mod tests {
         result
     }
 
-    fn test_body(assignments: Vec<Assignment>) -> String {
-        let mut prelude = BlockParsnip::new(None, vec![]);
-        prelude.add_builtin("+", Verb(Arity::Binary));
-        prelude.add_builtin("*", Verb(Arity::Binary));
-        prelude.add_builtin(".", Adverb(Arity::Binary, Arity::Binary));
-        prelude.add_builtin("fold", Adverb(Arity::Unary, Arity::Unary));
-        prelude.add_builtin("flip", Adverb(Arity::Unary, Arity::Binary));
-        prelude.add_builtin("x", Noun);
-        prelude.add_builtin("y", Noun);
-        let mut parsnip = BlockParsnip::new(Some(Rc::new(prelude)), assignments);
-        parsnip.parse();
-        print_assignments(&parsnip)
+    fn lookup_builtin(name: &String) -> Option<PartOfSpeech> {
+        match name.as_str() {
+            "+" | "*" => Some(Verb(Arity::Binary)),
+            "neg" | "sign" => Some(Verb(Arity::Unary)),
+            "." => Some(Adverb(Arity::Binary, Arity::Binary)),
+            "fold" => Some(Adverb(Arity::Unary, Arity::Unary)),
+            "flip" => Some(Adverb(Arity::Unary, Arity::Binary)),
+            _ => None,
+        }
+    }
+
+    // TODO: this is kinda duplicated with parse_to_completion
+    fn test_body(statements: Vec<Statement>) -> String {
+        let allocator = Rc::new(RefCell::new(Allocator::new()));
+        let mut block = BlockParsnip::new(allocator, statements);
+
+        loop {
+            match block.parse() {
+                Err(_) => break,
+                Ok(ParseResult::Complete(_, _)) => break,
+                Ok(ParseResult::PendingId(_)) => break,
+                Ok(ParseResult::PendingName(_)) => break,
+                Ok(ParseResult::PollingName(name)) => {
+                    if let Some(pos) = lookup_builtin(&name) {
+                        block.provide(RichIdentifier::new(0, name), pos);
+                    } else {
+                        block.not_yet_known(&name);
+                    }
+                }
+            }
+        }
+        print_assignments(&block)
     }
 
     #[test]

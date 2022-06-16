@@ -147,8 +147,7 @@ fn rewrite_block(block: Block<SoupyTerm>, parent_scope: &Scope) -> Block<Souples
         .collect()
 }
 
-// TODO
-// #[cfg(test)]
+#[cfg(test)]
 pub(super) fn split_expression(terms: Vec<SoupyTerm>) -> Vec<SouplessTerm> {
     let prelude = get_initial_scope();
     split(terms, &prelude)

@@ -147,8 +147,7 @@ fn statements(i: Tokens) -> ParseResult<Vec<Statement<SemiSoupyTerm>>> {
     Ok((i, statements))
 }
 
-// TODO: this should be test when i'm not using it in main anymore
-// #[cfg(test)]
+#[cfg(test)]
 pub(super) fn parse_expression(tokens: Vec<LocatedToken>) -> Result<Terms<SemiSoupyTerm>, String> {
     let i = Tokens::new(&tokens);
     let (i, expression) = expression(i).map_err(|e| format!("{}", e))?;
