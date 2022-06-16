@@ -963,10 +963,6 @@ mod tests {
         k9::snapshot!(advance(&mut call_stack), "n:(+ x foo)");
     }
 
-    fn assign(name: &str, expr: &str) -> Statement {
-        Statement::SimpleAssignment(name.to_string(), preparse(expr))
-    }
-
     struct Disambiguator {
         name_indices: HashMap<String, u64>,
         name_seen_at: HashMap<RichIdentifier, u64>,
@@ -1149,7 +1145,13 @@ mod tests {
     }
 
     // TODO: this is kinda duplicated with parse_to_completion
-    fn test_body(statements: Vec<Statement>) -> String {
+    fn test_body(input: &str) -> String {
+        let tokens = crate::tokenizer::tokenize(input);
+        let statements = crate::statement_parser::parse_tokens(tokens).unwrap();
+        let statements = crate::semicolons::rewrite(statements);
+        let statements = crate::op_splitter::rewrite(statements);
+        let statements = crate::coefficient_grouper::rewrite(statements);
+
         let allocator = Rc::new(RefCell::new(Allocator::new()));
         let mut block = BlockParsnip::new(allocator, statements);
 
@@ -1174,7 +1176,11 @@ mod tests {
     #[test]
     fn test_independent_assignments() {
         k9::snapshot!(
-            test_body(vec![assign("foo", "1 + 2"), assign("bar", "3 + 4")]),
+            test_body(
+                "
+foo = 1 + 2
+bar = 3 + 4"
+            ),
             "
 foo (n) = (+ 1 2)
 bar (n) = (+ 3 4)
@@ -1185,7 +1191,11 @@ bar (n) = (+ 3 4)
     #[test]
     fn test_shadowing() {
         k9::snapshot!(
-            test_body(vec![assign("foo", "1"), assign("foo", "2")]),
+            test_body(
+                "
+foo = 1
+foo = 2"
+            ),
             "
 foo (n) = 1
 foo_1 (n) = 2
@@ -1196,7 +1206,11 @@ foo_1 (n) = 2
     #[test]
     fn test_backreference() {
         k9::snapshot!(
-            test_body(vec![assign("foo", "1"), assign("bar", "foo + 1")]),
+            test_body(
+                "
+foo = 1
+bar = foo + 1"
+            ),
             "
 foo (n) = 1
 bar (n) = (+ foo 1)
@@ -1204,11 +1218,13 @@ bar (n) = (+ foo 1)
         );
 
         k9::snapshot!(
-            test_body(vec![
-                assign("foo", "1"),
-                assign("foo", "foo + 1"),
-                assign("foo", "foo + 1")
-            ]),
+            test_body(
+                "
+foo = 1
+foo = foo + 1
+foo = foo + 1
+"
+            ),
             "
 foo (n) = 1
 foo_1 (n) = (+ foo 1)
@@ -1219,16 +1235,18 @@ foo_2 (n) = (+ foo_1 1)
 
     #[test]
     fn test_recursive_reference() {
-        k9::snapshot!(
-            test_body(vec![assign("foo", "foo + 1")]),
-            "foo depends on foo"
-        );
+        k9::snapshot!(test_body("foo = foo + 1"), "foo depends on foo");
     }
 
     #[test]
     fn test_error_propagation() {
         k9::snapshot!(
-            test_body(vec![assign("foo", "[+]"), assign("bar", "foo + 1")]),
+            test_body(
+                "
+foo = [+]
+bar = foo + 1
+"
+            ),
             "
 foo failed: ArrayLiteralNotNoun
 bar depends on failed foo
@@ -1239,7 +1257,12 @@ bar depends on failed foo
     #[test]
     fn test_cyclic_reference() {
         k9::snapshot!(
-            test_body(vec![assign("foo", "bar + 1"), assign("bar", "foo + 1")]),
+            test_body(
+                "
+foo = bar + 1
+bar = foo + 1
+"
+            ),
             "
 foo depends on bar
 bar depends on foo
@@ -1247,11 +1270,13 @@ bar depends on foo
         );
 
         k9::snapshot!(
-            test_body(vec![
-                assign("foo", "bar + 1"),
-                assign("bar", "baz + 1"),
-                assign("baz", "foo + 1")
-            ]),
+            test_body(
+                "
+foo = bar + 1
+bar = baz + 1
+baz = foo + 1
+"
+            ),
             "
 foo depends on bar
 bar depends on baz
@@ -1263,7 +1288,11 @@ baz depends on foo
     #[test]
     fn test_forward_reference() {
         k9::snapshot!(
-            test_body(vec![assign("foo", "bar + 1"), assign("bar", "1")]),
+            test_body(
+                "
+foo = bar + 1
+bar = 1"
+            ),
             "
 foo (n) = (+ bar 1)
 bar (n) = 1
