@@ -325,7 +325,9 @@ impl Parsnip for ExpressionParsnip {
 
     fn provide(&mut self, id: RichIdentifier, pos: PartOfSpeech) {
         let top_frame = self.0.last_mut().unwrap();
-        top_frame.stack.push(Some((Expression::id(id), pos)));
+        top_frame
+            .stack
+            .push(Some((Expression::Identifier(id), pos)));
     }
 
     fn parse(&mut self) -> Result<ParseResult, ParseError> {
@@ -359,13 +361,13 @@ impl Parsnip for ExpressionParsnip {
                 }
 
                 Some(term) => match term {
-                    Term::NumericLiteral(num) => {
-                        frame.stack.push(Some((Expression::num(num), Noun)))
-                    }
+                    Term::NumericLiteral(num) => frame
+                        .stack
+                        .push(Some((Expression::NumericLiteral(num), Noun))),
                     Term::Coefficient(num) => frame.stack.push(Some((
                         Expression::unary(
                             Expression::Implicit(Builtin::Scale),
-                            Expression::num(num),
+                            Expression::NumericLiteral(num),
                         ),
                         Verb(Arity::Unary),
                     ))),
@@ -1046,12 +1048,9 @@ mod tests {
         use Expression::*;
 
         match expr {
-            Atom(crate::expression::Atom::Identifier(rich_id)) => {
-                Atom(crate::expression::Atom::Identifier(f(rich_id)))
-            }
-            Atom(_) => expr.clone(),
+            Identifier(rich_id) => Identifier(f(rich_id)),
+            NumericLiteral(_) | Implicit(_) => expr.clone(),
             Parens(exprs) => Parens(Box::new(rewrite_ids(exprs, f))),
-            Implicit(x) => Implicit(*x),
             Tuple(exprs) => Tuple(exprs.iter().map(|expr| rewrite_ids(expr, f)).collect()),
             Brackets(exprs) => Brackets(exprs.iter().map(|expr| rewrite_ids(expr, f)).collect()),
             UnaryApplication(expr1, expr2) => {

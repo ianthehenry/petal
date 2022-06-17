@@ -6,7 +6,8 @@ use std::hash::{Hash, Hasher};
 pub enum Expression {
     Compound(HashMap<RichIdentifier, Expression>, Box<Expression>),
     Implicit(Builtin),
-    Atom(Atom),
+    Identifier(RichIdentifier),
+    NumericLiteral(String),
     Parens(Box<Expression>),
     // TODO: currently tuples and brackets store their elements in reverse
     // order, which is a dumb performance hack.
@@ -24,14 +25,6 @@ impl Expression {
     pub(super) fn binary(f: Expression, x: Expression, y: Expression) -> Self {
         Expression::BinaryApplication(Box::new(f), Box::new(x), Box::new(y))
     }
-
-    pub(super) fn num(num: String) -> Self {
-        Expression::Atom(Atom::NumericLiteral(num))
-    }
-
-    pub(super) fn id(id: RichIdentifier) -> Self {
-        Expression::Atom(Atom::Identifier(id))
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -42,12 +35,6 @@ pub enum Builtin {
     Compose,
     ComposeLeft,
     ComposeRight,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Atom {
-    NumericLiteral(String),
-    Identifier(RichIdentifier),
 }
 
 pub type Identifier = u64;
@@ -82,15 +69,6 @@ impl Hash for RichIdentifier {
     }
 }
 
-impl fmt::Display for Atom {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Atom::NumericLiteral(num) => write!(f, "{}", num),
-            Atom::Identifier(id) => write!(f, "{}", id),
-        }
-    }
-}
-
 impl fmt::Display for Builtin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Builtin::*;
@@ -121,7 +99,8 @@ impl fmt::Display for Expression {
                 }
                 write!(f, ") {})", expr)
             }
-            Atom(atom) => write!(f, "{}", atom),
+            Identifier(rich_id) => write!(f, "{}", rich_id),
+            NumericLiteral(num) => write!(f, "{}", num),
             Implicit(builtin) => write!(f, "<{}>", builtin),
             Parens(expr) => write!(f, "{}", expr),
             Brackets(exprs) => {
